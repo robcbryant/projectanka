@@ -1,0 +1,356 @@
+
+{% extends "admin/base.html" %}
+{% load staticfiles %}
+
+{% load enki_tags %}
+{% block title %}Maqlu Engine{% endblock %}
+
+
+{% block branding %}<a href="{% url 'admin:index' %}"><span class="glyphicon glyphicon-certificate"></span>M<small>aqlu</small> D<small>atabase</small> E<small>ngine</small></a>{% endblock %}
+
+{% block breadcrumbs %}
+    {% include "maqluengine/admin_header.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}
+{% endblock %}
+
+{% block content %} 
+    <div id="project-content" class="container-fluid">
+    
+        <!-- This panel is the side column for listing available form types -->
+        <div id="left-pane" class="col-md-2">
+            {% include "maqluengine/admin_side_bar.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}                              
+        </div>
+        
+        
+        <div id="center-pane" class="col-md-10">
+        
+                <form id="form-nav-search-form" method="post" autocomplete="off">
+                {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+                <div id="nav-container">
+                    <div class="spacer"></div>
+                    <div id="form-navigation">
+                    
+                        <div class="span-container"><a id="previous-form-link"><span class="glyphicon glyphicon-backward"></span></a></div>
+                        <div class="search-field">
+                            <input type='text' id="form-nav-search" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>
+                            <div id="search-box-list" style="display:none;"></div>
+                        </div>
+                        <div class="span-container"><a id="next-form-link"><span class="glyphicon glyphicon-forward"></span></a></div>
+                    </div>
+                    <div class="spacer"> 
+                    
+                    {% if user_access >= access_level %}
+                    <div class="btn-group btn-group-sm save-delete-buttons" role="group">
+                        <label for="submit-form" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn btn-success" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
+                        
+                        <button id="toolbar-delete" class="btn btn-danger" disabled><span class="glyphicon glyphicon-trash"></span></button>
+
+                    </div>  
+                   {% endif %} 
+                       
+                    </div>
+                </div>
+                <input type="submit" autocomplete="off" hidden/>    
+             </form>
+        
+        
+        
+            <div style="height:10px;"></div>
+            <form id="new-form" method="post">
+                {% if user_access >= access_level %}
+                {% csrf_token %}
+                <script>
+                    var GV_formtypePK = {{formtype.pk}};
+                    var GV_projectPK = {{project.pk}};
+                </script>
+                {% endif %}
+                <input type="submit" id="submit-form" class="hidden">
+                <input type="submit" id="submit-delete-form" class="hidden" name='delete-form-type'>
+                <input type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
+                
+                <div id="form-header" class="row">
+                    <div class="col-md-12">
+                        <div class="row header-container">
+                            <div class="col-md-6">
+                                <div id="geospatial" style="min-height:400px;">
+                                    <!--geospatial stuff goes here-->
+                                    <div id="gis-help-text-box" class="col-md-12"></div>
+                                    <div style="display:none;"><strong>GeoJSON Data</strong></div>
+                                    <div style="display:none;"><textarea id="id_geojson_string" name ="form_geojson_string"></textarea></div>
+                                </div>
+                            </div>
+                                                      
+                            <!-- FormType Name Entry for Editing-->
+                            <div id="form-properties" class="col-md-6">
+                                <div id="form-info" class="panel">
+                                    <div class="panel-heading">{{ formtype.form_type_name }} Properties</div>
+                                    <div class="panel-body">
+                                        <div class="input-group">
+                                            {% if formtype.type == 0 %}
+                                            <span class="input-group-addon property-label">{{ formtype.form_type_name }} ID</span>
+                                            <input type="text" name="form_number" value="{% if formtype.is_hierarchical == False %}{%endif%}" class="form-control property-value">
+                                                
+                                            {% elif formtype.type == 1%}
+                                            <span class="input-group-addon">{{ formtype.form_type_name }} URI ID</span>
+                                            <input type="text" name="form_number" value="" class="form-control property-value">
+                                            {%endif%}
+                                            
+                                        </div>
+                                        {% if formtype.is_hierarchical%}
+                                            <div class="input-group">
+                                                <span class="input-group-addon">Choose an available Parent: </span>
+                                                <select  class="selectpicker" data-size="5" data-width="100%" data-live-search="true" name="hierarchical_reference">
+                                                    <option value="NONE">--None--</option>
+                                                {% for aform in formtype.form_set.all%}
+                                                    <option data-icon="glyphicon-file" value="{{aform.pk}}">{%if aform.hierarchy_parent != None %}{{aform.hierarchy_parent}}{%endif%} -- {{aform}}</option>
+                                                {% endfor %} 
+                                                </select>
+                                            </div>
+                                        {% endif %}
+
+                                        
+                                    </div>
+                                </div>   
+                            </div>
+                    
+                        </div>
+                    </div>
+                    
+                    <!-- All Attributes -->
+                  
+                    
+                    <div id="form-all-fields-grid" class="col-md-12">  
+                            {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
+                                <div class="attribute-float">
+                                    <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                    <ul class="list-group" title="{{formrecordattributetype}}">
+                                        <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
+                                        <li class="list-group-item input-field">
+                                            <textarea rows="1" name="{{formrecordattributetype|post_model_type}}{{formrecordattributetype.pk}}"></textarea>
+                                        </li>
+                                    </ul>
+                                </div>
+                            {% endfor %}
+                        {% for FRRT in formtype.ref_to_parent_formtype.all %}  
+
+                                    <div class="widget-FRRT" title="{{FRRT.pk}}" msg="NEW">
+                                        <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                        <div class="frrv-title">
+                                            <div>{{FRRT.record_type|trim_title}}</div>
+                                        </div>
+                                        <div class="frrv-list">
+
+                                        </div>
+                                        <div class="frrv-search">
+                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
+                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                        </div>
+                                    </div>
+                                    
+
+                        {% endfor %}
+                    </div>
+                    
+                                <div class="row-fluid"> 
+
+                                </div>
+                            </div>
+                            
+                </div>
+            </form>
+        </div>
+    </div>
+
+{% endblock %}
+
+    {% block footer %}
+     <script src="{% static 'openlayers/enki/enki_geoeditor_single_entity.js'  %}"></script> 
+     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>       
+    {% if user_access >= access_level %}
+    <script>
+        $('#new-form').submit(function(e){
+             e.preventDefault();
+            var formData = $("#new-form").serializeArray();
+            formData.push({name: 'project_id', value: {{project.pk}} });
+            formData.push({name: 'formtype_id', value: {{formtype.pk}} });
+            console.log(formData);
+            $.ajax({ 
+                 url   : 'http://67.205.135.223/admin/create_new_form/',
+                 type  : "POST",
+                 data  : formData, // data to be submitted
+                 success : function(returnedQuery)
+                 {
+                    console.log(returnedQuery);
+                    
+                 },
+                // handle a non-successful response
+                fail : function(xhr,errmsg,err) {
+                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                }
+            });        
+        
+        });
+
+
+        //Function to remove the current reference from the form's FRRT widget-FRRT
+        function removeReferenceFromFRRV(currentRef){
+            $(currentRef).parent().remove();
+            //$(currentRef).parent().find('input').attr('name', $(currentRef).parent().find('input').attr('name') += 'DELETE');
+        }
+        
+        
+        //Function that searches for the given list of forms based upon its formtype
+        
+        function lookForReferenceForms(searchbox, projectID, formtypeID, parentFormTypeID){
+            //First get all the associated data we'll need to send to the server
+            var searchString = $(searchbox).val();
+            var jsonData = {"projectID" : projectID, "formtypeID" : formtypeID, "query" : searchString};
+            console.log (jsonData);
+            //Send and AJAX Request
+            $.ajax({ 
+                     url   : "http://67.205.135.223/admin/get_form_search_list/",
+                     type  : "POST",
+                     data  : jsonData, // data to be submitted
+                     success : function(returnedQuery)
+                     {
+                        //$("#search-box-list").show();
+                        console.log(returnedQuery.form_list);
+                        //Create a dropdown of no more than 5 items
+                        $newSelect = $(searchbox).parent().find('.search-box-list');
+                        $newSelect.empty();
+                        $newSelect.hide();
+                        //Only do something if "form_list" is in the json data
+                        if(returnedQuery['form_list'] != null){
+                            for (i=0; i< returnedQuery.form_list.length; i++){
+                                var currentForm = returnedQuery.form_list[i];
+                                if (currentForm.label.length > 24){ 
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
+                                } else {
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');                           
+                                }
+                                $newSelect.append($newListItem);
+                            }
+                            //For another robust solution--let's modify the text size to be smaller if it's longer than 30 characterSet
+                            $newSelect.children().each( function() {
+                               if ($(this).children().first().text().length > 30) $(this).children().first().addClass('form-nav-search-sml-txt'); 
+                            });
+                            $newSelect.show();
+                        }2
+                     },
+
+                    // handle a non-successful response
+                    fail : function(xhr,errmsg,err) {
+                        console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                    }
+                });    
+            
+        }
+        //This makes the search box disappear when clicking off the box
+        $(document).mouseup(function(e) 
+{
+            var container = $(".search-box-list");
+
+            // if the target of the click isn't the container nor a descendant of the container
+            if (!container.is(e.target) && container.has(e.target).length === 0) 
+            {
+                container.hide();
+            }
+    
+    
+        });
+        
+        //Function adds a ref to the FRRT list box
+        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id){
+            console.log(frrt_id);
+            $currentWidget = $('.widget-FRRT[title="'+frrt_id+'"]')
+            console.log($currentWidget[0]);
+            if ($currentWidget.attr('msg') == "NEW"){
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+            } else  {
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+            } 
+
+            $(".search-box-list").hide();          
+
+        }
+    
+    var Xmin = 0;
+    var Xmax = 100;
+    var Ymin = 0;
+    var Ymax = 100;
+    var lastX = 0;
+    var lastY = 0;
+    $currentWidget = null;
+    
+    var widgetMouseMove = function(e){
+        var currentPosition = $currentWidget.position();
+
+        $currentWidget.css('position', 'absolute');
+        console.log(currentPosition.left);        
+        console.log(e.clientX + "  :  " + lastX);
+        
+       if (e.clientX > lastX){//We're dragging right
+            console.log('calc('+currentPosition.left+'px + 1%)');
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px + 1%)' );
+            if($currentWidget.position().left  > Xmax ){$currentWidget.css('left', Xmax);}
+       } else if (e.clientX < lastX) {//We're dragging left
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px - 1%)' );
+            if($currentWidget.position().left  < 0 ){$currentWidget.css('left', '0%');}
+       } else { //We are hovering and not moving
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px)' );
+       }
+       
+       if (e.clientY > lastY){//We're dragging down
+            console.log('calc('+currentPosition.top+'px + 1%)');
+            $currentWidget.css('top', 'calc('+currentPosition.top+'px + 2%)' );
+            if($currentWidget.position().top  > Ymax ){
+                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
+            }       
+       } else if (e.clientY < lastY) {//We're dragging up
+            $currentWidget.css('top', 'calc('+currentPosition.top+'px - 2%)' );
+            if($currentWidget.position().top  < 0 ){$currentWidget.css('top', '0%');}    
+            if($currentWidget.position().top  > Ymax ){
+                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
+            }              
+       } else { //We are hovering and not moving
+            $currentWidget.css('top', 'calc('+currentPosition.top+'px)' );
+            if($currentWidget.position().top  > Ymax ){
+                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
+            }  
+       }
+        //console.log(e);
+        lastX = e.clientX;
+        lastY = e.clientY;
+    };
+    
+    $('.widget-control').mousedown(function(e){
+        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
+        document.addEventListener('mousemove', widgetMouseMove, false);
+        console.log(e);
+        $currentWidget = $(e.currentTarget).parent();
+        
+        console.log($currentWidget);
+        lastX = e.clientX;
+        lastY = e.clientY;
+        
+        Xmax = $currentWidget.parent().width() - $currentWidget.width();
+        Ymax = $currentWidget.parent().height() - $currentWidget.height();
+        console.log(Ymax);
+        if(Ymax < 0) {
+            console.log('to low');
+            $currentWidget.parent().css('height', $currentWidget.height());
+            Ymax = 0;
+        }
+    
+    });
+    
+    $(document).mouseup(function(e){
+        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
+        document.removeEventListener('mousemove', widgetMouseMove, false);
+    
+    });
+       
+    </script>
+    {% endif %}     
+   {% endblock %}

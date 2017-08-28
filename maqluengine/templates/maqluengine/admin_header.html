@@ -1,0 +1,41 @@
+{% load enki_tags %}
+
+<div class="breadcrumbs">
+    <div class="stripeA" id="stripeA"></div>
+    <div class="stripeB" id="stripeB"></div>
+    <div class="stripeC" id="stripeC"></div>
+
+
+    <div class="row" id="header-toolbar">
+        <div class="attribute-float-header-row project-title" id="PROJECT_ID" title="{{project.pk}}">
+            <a href="{% url 'maqlu_admin:project_home' project_pk=project.pk %}"><span class="glyphicon glyphicon-globe"></span><strong>{{ project.name }} P<small>roject</small> A<small>dministration</small></strong></a>
+        </div>
+        <div class="attribute-float-header-row header-spacer"></div>
+        <div class="attribute-float-header-row toolbar-title" id="FORMTYPE_ID" title="{% if formtype != None %} {{formtype.pk}} {%endif%}">{{ toolbar_title_code|get_toolbar_title }}</div>
+        <div class="attribute-float-header-row header-spacer"></div>
+        <div class="attribute-float-header-row btn-toolbar" id="toolbar-buttons" role="toolbar">
+                    <div class="btn-group btn-group-sm" role="group">
+                        <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Go To Project Control Panel" role="button" href="{% url 'maqlu_admin:project_home' project_pk=project.pk %}"><span class="glyphicon glyphicon-home"></span></a>
+                        <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Change User Settings" role="button" href="#"><span class="glyphicon glyphicon-cog"></span></a>
+                    </div>
+                    {% if user_access >= 3 %}
+                    <div class="btn-group btn-group-sm" role="group">
+                        <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Create New Form Template" role="button" href="{% url 'maqlu_admin:new_form_type' project_pk=project.pk %}"><span class="glyphicon glyphicon-book"></span></a>
+                        <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Import Form Template from CSV" role="button" href="{% url 'maqlu_admin:formtype_importer' project_pk=project.pk %}"><span class="glyphicon glyphicon-flash"></span></a>
+                    </div>
+                    {% endif %}
+                    {% if user_access >= 2 %}
+                    <div class="btn-group btn-group-sm" role="group">
+                        {% if formtype %}
+                            <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Create New {{formtype}} Form" role="button" href="{% url 'maqlu_admin:new_form' project_pk=project.pk form_type_pk=formtype.pk %}"><span class="glyphicon glyphicon-list-alt"></span></a>
+ 
+                        {% else %}
+                            <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Create New Form" role="button" href="#" disabled><span class="glyphicon glyphicon-file"></span></a>       
+                        {%endif%}
+                    </div>
+                    {%endif%}
+                    
+                                                                                                                                   
+        </div>
+    </div>
+</div>

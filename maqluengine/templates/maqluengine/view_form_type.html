@@ -1,0 +1,338 @@
+
+{% extends "admin/base.html" %}
+{% load staticfiles %}
+
+{% load enki_tags %}
+{% block title %}Maqlu Engine{% endblock %}
+
+
+{% block branding %}<a href="{% url 'admin:index' %}"><span class="glyphicon glyphicon-certificate"></span>M<small>aqlu</small> D<small>atabase</small> E<small>ngine</small></a>{% endblock %}
+
+{% block breadcrumbs %}                      
+    {% include "maqluengine/admin_header.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form access_level=access_level user_access=user_access%}
+{% endblock %}
+
+{% block content %} 
+
+    <div id="project-header" class="container-fluid">
+        <script>
+            var GV_formtypePK = {{formtype.pk}};
+            var GV_projectPK = {{project.pk}};
+        </script>
+    </div><!-- project header -->
+      
+    <div id="project-content" class="container-fluid">
+    
+        <!-- This panel is the side column for listing available form types -->
+        <div id="left-pane" class="col-md-2">
+            {% include "maqluengine/admin_side_bar.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}                           
+        </div>
+        
+         
+        
+        <div id="center-pane" class="col-md-10">
+            <form id="form-nav-search-form" method="post" autocomplete="off">
+            {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+                <div id="nav-container">
+                    <div class="spacer"></div>
+                    <div id="form-navigation" class="view-form-type-version">
+                       
+                        <div class="span-container view-form-search-label"><span>Search Forms:</span></div>
+                        <div class="search-field">
+                            <input type='text' id="form-nav-search" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>
+                            <div id="search-box-list" style="display:none;"></div>
+                        </div>
+                        <div class="span-container view-form-search-icon"><span class="glyphicon glyphicon-search"></span></div>
+                        
+                    </div>
+                    <div class="spacer"></div>
+                </div>
+           
+            <input type="submit" autocomplete="off" hidden/>    
+         </form>
+             
+            <div id="search-form">
+                <form method="post">
+                {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+                <input id="sesID" type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
+                 
+                <div class="search-title">{{formtype}} Search </div>
+                <div class="main-query-frame">
+                    <div class="all-queries">
+                        <div class="single-query" style="display:none">
+                            <button class="del-new-query btn" type="button"><span class="glyphicon glyphicon-remove-circle"></span></button>
+                            <div class="big-and-or-select">
+                            <span class="glyphicon glyphicon-arrow-down"></span>
+                                <select class="__Q-AO">
+                                    <option value="and">AND</option><option value="or">OR</option>
+                                </select>
+                            <span class="glyphicon glyphicon-arrow-up"></span>
+                            </div>
+                            <div class="query-container">
+                                <span class="glyphicon glyphicon-th-list"></span>
+                                <div class="formtype-select">
+                                    <select class="__RTYPE" >
+                                        <option value="FORMID-0">{{formtype}} ID</option>
+                                        {% for atttype in formtype.formrecordattributetype_set.all %}
+                                            <option value="FRAT-{{atttype.pk}}">{{atttype}}</option>
+                                        {% endfor %}
+                                        {% for reftype in formtype.ref_to_parent_formtype.all %}
+                                            <option value="FRRT-{{reftype.pk}}">{{reftype}}</option>
+                                        {% endfor %}
+                                     </select>
+                                </div>
+                                <span class="glyphicon glyphicon-arrow-right"></span >
+                                <input class="__T-AO-A" type="text" value="NULL" hidden></input>
+                                <div class="options-select">
+                                    <select class="__QCODE-A">
+                                        <option value="0">Contains(Case Sensitive)</option>
+                                        <option value="1">Contains</option>
+                                        <option value="2">Matches Exact</option>
+                                        <option value="3">Excludes</option>
+                                        <option value="4">Is Null</option>
+                                     </select>
+                                </div>
+                                <span class="glyphicon glyphicon-arrow-right"></span>
+                                <input class="__TVAL-A" type="text"></input>                     
+                            </div>
+                            <div class="and-or-container">
+                                <div class="newTerm" style="display:none">   
+                                    <button class="btn btn-info and-or-btn"  type="button"><span class="glyphicon glyphicon-remove-circle"></span></button>
+                                    <div class="and-or-query">
+                                        <select class="__T-AO and-or-select">
+                                            <option value="and">AND</option><option value="or">OR</option>
+                                        </select>
+                                        <span class="glyphicon glyphicon-arrow-right"></span>
+                                        <div class="and-or-options-select">
+                                            <select class="__QCODE">
+                                                <option value="0">Contains(Case Sensitive)</option>
+                                                <option value="1">Contains</option>
+                                                <option value="2">Matches Exact</option>
+                                                <option value="3">Excludes</option>
+                                                <option value="4">Is Null</option>
+                                             </select>
+                                        </div>
+                                        <span class="glyphicon glyphicon-arrow-right"></span>
+                                        <input class="__TVAL" type="text"></input>      
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="btn btn-info and-or-add-btn" type="button">Add Term</button>
+                        </div>
+
+
+
+                    
+                        <div class="single-query __Q">
+                            <div class="query-container">
+                                <span class="glyphicon glyphicon-th-list"></span>
+                                <select class="__Q-AO" hidden><option value="NULL" selected></option></select>
+                                <div class="formtype-select">
+                                    <select class="__RTYPE">
+                                            <option value="FORMID-0">{{formtype}} ID</option>
+                                        {% for atttype in formtype.formrecordattributetype_set.all %}
+                                            <option value="FRAT-{{atttype.pk}}">{{atttype}}</option>
+                                        {% endfor %}
+                                        {% for reftype in formtype.ref_to_parent_formtype.all %}
+                                            <option value="FRRT-{{reftype.pk}}">{{reftype}}</option>
+                                        {% endfor %}
+                                     </select>
+                                </div>
+                                <span class="glyphicon glyphicon-arrow-right"></span>
+                                <input class="__T-AO-A" type="text" value="NULL" hidden></input>
+                                <div class="options-select">
+                                    <select class="__QCODE-A">
+                                        <option value="0">Contains(Case Sensitive)</option>
+                                        <option value="1">Contains</option>
+                                        <option value="2">Matches Exact</option>
+                                        <option value="3">Excludes</option>
+                                        <option value="4">Is Null</option>
+                                     </select>
+                                </div>
+                                <span class="glyphicon glyphicon-arrow-right"></span>
+                                <input class="__TVAL-A" type="text" ></input>                     
+                            </div>
+                            <div class="and-or-container">
+                                <div class="newTerm" style="display:none">  
+                                    <button class="btn btn-info and-or-btn" type="button"><span class="glyphicon glyphicon-remove-circle"></span></button>
+                                    <div class="and-or-query">
+                                        <select class="__T-AO and-or-select">
+                                            <option value="and">AND</option><option value="or">OR</option>
+                                        </select>
+                                        <span class="glyphicon glyphicon-arrow-right"></span>
+                                        <div class="and-or-options-select">
+                                            <select class="__QCODE">
+                                                <option value="0">Contains(Case Sensitive)</option>
+                                                <option value="1">Contains</option>
+                                                <option value="2">Matches Exact</option>
+                                                <option value="3">Excludes</option>
+                                                <option value="4">Is Null</option>
+                                             </select>
+                                        </div>
+                                        <span class="glyphicon glyphicon-arrow-right"></span>
+                                        <input class="__TVAL" type="text"></input>      
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="btn btn-info and-or-add-btn" type="button">Add Term</button>
+                        </div>
+                    
+                    </div> <!-- End of all-queries  container -->
+                    
+                    <div class="query-constraints">
+                        <div class="constraints-header">Optional Constraints</div>
+                        <div class="constraints-container">
+                            <div class="single-constraint">
+                                <button class="btn del-constraint-btn" type="button" style="display:none"><span class="glyphicon glyphicon-remove-circle"></span></button>
+                                <select class="__RTYPE">
+                                        <option value="FORMID-0">{{formtype}} ID</option>
+                                    {% for atttype in formtype.formrecordattributetype_set.all %}
+                                        <option value="FRAT-{{atttype.pk}}">{{atttype}}</option>
+                                    {% endfor %}
+                                    {% for reftype in formtype.ref_to_parent_formtype.all %}
+                                        <option value="FRRT-{{reftype.pk}}">{{reftype}}</option>
+                                    {% endfor %}
+                                 </select>
+
+                                <select class="__QCODE">
+                                    <option value="0">Contains(Case Sensitive)</option>
+                                    <option value="1">Contains</option>
+                                    <option value="2">Matches Exact</option>
+                                    <option value="3">Excludes</option>
+                                    <option value="4">Is Null</option>
+                                 </select>
+                                <input class="__TVAL" type="text" ></input>   
+                                <span class="glyphicon glyphicon-star primary-constraint">
+                                    <input type="checkbox" class="__PRIMARY">
+                                </span>
+                            </div>
+                        </div>
+                        <button id="add-constraint" class="btn add-constraint-btn" type="button">Add Constraint</button>
+                    </div>
+
+                    
+                </div>
+                <button id="add-query" class="btn add-query-btn" type="button">Add Query</button>
+                <input type="submit" name="SEARCH" value="SEARCH"></input>
+                </form>
+            </div>
+            
+            <div id="query-stats">
+                <div class='stats-header'>Query Progress and Statistics</div> 
+                <div class="progress">
+                    <div id="query-progress-bar" class="active progress-bar progress-bar-striped" role="progressbar" aria-valuenow="40" aria-valuemin="0" aria-valuemax="100" style="min-width:2em; width:0%; white-space: nowrap;text-align:left;padding-left:10px;">0%</div>
+                </div>
+                <div id="info-message">
+                    
+                </div>
+                <div id="query-graphs">
+             
+                </div>
+
+            </div>
+            
+            <form id="find-replace-form" method="post">
+            {% csrf_token %}
+            
+                <div id="view-table">
+                    <div class="query-stats"><span class="query-title">Query Results</span>{% if user_access >= access_level %}<div class="find-replace"><span>Find</span><input type="text" id="find"><span>Replace</span><input type="text" id="replace"><button type="button" class="btn button-find-replace"><span class="glyphicon glyphicon-search"></span></div><label for="submit-find-replace-form" role="button" class="btn save-edits-button"><span class="glyphicon glyphicon-floppy-disk"></span></label><div class="find-replace-stats"></div>{% endif %}</div>
+                    <div class="scroll-container">
+                    
+                   
+                    <table id="view-table-body" class="table table-striped table-select" border="1px">
+                    <tbody>
+                    <!-- List of forms is generated here-->
+                    </tbody>
+                    </table>
+                    
+
+                    
+                    </div>
+                </div> 
+                <input id="submit-find-replace-form" type="submit" hidden></input>
+            </form>            
+                
+            
+
+            
+            
+        </div>
+    </div>
+
+
+{% endblock %}
+
+
+    {% block footer %}
+    <script src="{% static 'chart/Chart.min.js'  %}"></script>     
+    <script src="{% static 'js/enki-search-formtype-controls.js' %}"></script> 
+    <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script>  
+    <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>  
+        {% if user_access >= access_level %} <script src="{% static 'js/enki-view-form-type-find-replace-controls.js' %}"></script>{% endif %}
+    <script>
+   //***************************************************************************************
+   // These functions handle building a new HTML table of the query results for the user
+   //***************************************************************************************
+ 
+    function rebuildQueryResultsTable(results){
+        //Setup the necessary DOM variables
+        $queryTable = $('#view-table-body').children().first();
+        console.log($queryTable);
+        //Build the header
+        var $headerRow = $('<tr class="header-row"></tr>');
+        $queryTable.append($headerRow);
+        $headerRow.append('<td>Preview</td>');
+        $headerRow.append('<td>' + results.formtype + '</td>');
+        for(i = 0; i < results.rtype_header.length;i++) {
+            value = results.rtype_header[i].name;
+            $headerRow.append('<td title="'+value+'"><div><span>'+value+'</span>{% if user_access >= access_level %} <button type="button" class="btn edit-column-button"><span class="glyphicon glyphicon-pencil"></span></button> {% endif %} </div></td>');    
+        }
+        //build the individual form rows and append them to the newly cleared table
+        for(row=0; row < results.form_list.length;row++){
+            var $newRow = $('<tr></tr>');
+            var $currentForm = results.form_list[row];
+            $queryTable.append($newRow);
+            //Now add all the relevant columns ofinformation
+            //Add the thumbnail link
+            //First see if it's a 'NO Preview" -- if it is, then add the IMG-404 class--we don't want to show it as a big pop up
+            if($currentForm.thumbnail_URI.search('no-thumb-missing.png') != -1 ){
+                console.log("sanity test");
+                $newRow.append('<td><a href="#"><img class="enki-img-popup IMG-404" src="' + $currentForm.thumbnail_URI +'"></img></a></td>');
+            //Otherwise add it as normal
+            }else{
+                console.log("Or not?");
+                console.log($currentForm.thumbnail_URI);
+                $newRow.append('<td><img class="enki-img-popup" src="' + $currentForm.thumbnail_URI +'" onError="this.onerror=null;this.src=\'http://67.205.135.223/static/site-images/no-thumb-missing.png\';this.classList.add(\'IMG-404\');"></img></td>');
+            }       
+            //Add the form id link
+            $newRow.append('<td style="white-space: nowrap;"><a href="http://'+ document.location.hostname +'/admin/project/' + results.project_pk +'/formtype/' + results.formtype_pk + '/form_editor/' + $currentForm.pk + '/">' + results.formtype +': ' + $currentForm.form_id + '</a></td>');
+            //now add each individual column from the query results
+            for(col=0; col < $currentForm.rvals.length;col++){
+               $thisRval = $currentForm.rvals[col];
+               //If we're working with a FRAT (Form Record Attribute Value) or a 'frrv-ext' value then just display the text
+               if($thisRval.rtype != "frrv"){
+                   if($thisRval.value.length < 40){$newRow.append('<td><span class="frav_view" {% if user_access >= access_level %} onclick="editIndividualRecord(this)" {% endif %} >'+ $thisRval.value.replace(/,/g, ",&nbsp;") +'</span>{% if user_access >= access_level %}<textarea form="find-replace-form" class="frav_edit" name="frav__'+$thisRval.pk+'" oninput="flagTextareaAsChanged(this)" style="display:none"  disabled>'+ $thisRval.value.replace(/,/g, ",&nbsp;") +'</textarea>{% endif %} </td>');}
+                   else{$newRow.append('<td><div>'+ $thisRval.value.replace(/,/g, ",&nbsp;") +'</div></td>');}
+               //Otherwise we are dealing with a FRAV   reference type, and we need to parse out the list of names and make them links
+               } else {
+                   var FRRVlist = $thisRval.value.split("^,^");
+                   var parsedHTML = ""; 
+                   for(i=0; i<FRRVlist.length;i++){parsedHTML+='<a class="relation-link" href="http://'+ document.location.hostname +'/admin/project/' + results.project_pk +'/formtype/' + FRRVlist[i].split("|^|")[1] + '/form_editor/' + FRRVlist[i].split("|^|")[2] + '/">' + FRRVlist[i].split("|^|")[0] + '</a>';}
+                   $newRow.append('<td>' + parsedHTML + '</td>');
+               }
+            }
+        }
+        
+        {% if user_access >= access_level %}
+        $('.edit-column-button').click( function() {
+            turnOnColumnForEdits(this);
+        });
+        {% endif %}
+        
+        //Activate the iamge popup for the thumbnails
+        //--This will require the enki-thumbnail-popup.js to be included on this page
+        updateImagePopup();
+    }    
+
+    </script>    
+    {% endblock %}

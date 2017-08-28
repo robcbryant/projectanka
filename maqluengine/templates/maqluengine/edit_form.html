@@ -1,0 +1,427 @@
+
+{% extends "admin/base.html" %}
+{% load staticfiles %}
+
+{% load enki_tags %}
+{% block title %}Maqlu Engine&nbsp;&nbsp;-&nbsp;&nbsp;{{project}}&nbsp;&nbsp;:&nbsp;&nbsp;{{formtype}}&nbsp;&nbsp;:&nbsp;&nbsp;{{form}}{% endblock %}
+
+
+{% block branding %}<a href="{% url 'admin:index' %}"><span class="glyphicon glyphicon-certificate"></span>M<small>aqlu</small> D<small>atabase</small> E<small>ngine</small></a>{% endblock %}
+
+{% block breadcrumbs %}
+    {% include "maqluengine/admin_header.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}
+{% endblock %}
+
+{% block content %} 
+    
+    <div id="project-header" class="container-fluid">
+        <script>
+            var GV_formPK = {{form.pk}};
+            var GV_formtypePK = {{formtype.pk}};
+            var GV_projectPK = {{project.pk}};
+        </script>
+    </div><!-- project header -->
+    
+    
+    <div id="project-content" class="container-fluid">
+    
+        <!-- This panel is the side column for listing available form types -->
+        <div id="left-pane" class="col-md-2">
+            {% include "maqluengine/admin_side_bar.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}                              
+        </div>
+         
+        <div id="center-pane" class="col-md-10">
+ 
+            <form id="form-nav-search-form" method="post" autocomplete="off">
+                {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+                <div id="nav-container">
+                    <div class="spacer"></div>
+                    <div id="form-navigation">
+                    
+                        <div class="span-container"><a id="previous-form-link"><span class="glyphicon glyphicon-backward"></span></a></div>
+                        <div class="search-field">
+                            <input type='text' id="form-nav-search" placeholder="{{form}}" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>
+                            <div id="search-box-list" style="display:none;"></div>
+                        </div>
+                        <div class="span-container"><a id="next-form-link"><span class="glyphicon glyphicon-forward"></span></a></div>
+                    </div>
+                    <div class="spacer"> 
+                    
+                    {% if user_access >= access_level %}
+                    <div class="btn-group btn-group-sm save-delete-buttons" role="group">
+                        <label for="submit-form" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn btn-success" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
+                        
+                        <button id="toolbar-delete" {%if form != 'False' %}name="delete-form" value="{{form.pk}}"{%else%}name="delete-form-type" value="{{formtype.pk}}"{%endif%}" type="submit" data-toggle="tooltip" data-placement="bottom" title="Delete Current Form or Form Template" class="btn btn-danger" role="button" {% if deletable == 'True' %}{% else %}disabled{% endif %}><span class="glyphicon glyphicon-trash"></span></button>
+
+                    </div>  
+                   {% endif %} 
+                       
+                    </div>
+                </div>
+                <input type="submit" autocomplete="off" hidden/>    
+             </form>
+
+ 
+             <form id="edit_form" method="post">
+                {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+                <input type="submit" id="submit-form" class="hidden">
+                <input type="submit" id="submit-delete-form" class="hidden" name='delete-form-type'>
+                <input type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
+                
+                <div id="form-header" class="row">
+              
+                    <div class="col-md-12">
+                        <div class="row header-container">
+                            <div class="col-md-6">
+                             {% if formtype.media_type == 3 %}
+                                <div id="three-viewer">
+                                    <a id="three-viewer-link" title="{% static 'Temp Files/untitled.jpg'  %}" href="{% static 'Temp Files/untitled.obj'  %}">Download Link</a>
+                                </div>
+                                
+                                <script src="{% static 'three/three.min.js'  %}"></script>
+                                <script src="{% static 'three/js/loaders/OBJLoader.js'  %}"></script>
+                                <script src="{% static 'three/js/controls/OrbitControls.js'  %}"></script>
+                                <script src="{% static 'three/js/Detector.js'  %}"></script>
+                                <script src="{% static 'three/js/libs/stats.min.js'  %}"></script>
+                                <script src="{% static 'js/enki_3dviewer.js'  %}"></script> 
+                                
+                             {% else %}
+                                <div id="geospatial" style="min-height:400px;">
+                                    <!--geospatial stuff goes here-->
+                                    <div id="gis-help-text-box" class="col-md-12"></div>
+                                    <div style="display:none;"><strong>GeoJSON Data</strong></div>
+                                    <div style="display:none;"><textarea id="id_geojson_string" name ="form_geojson_string">{{form.form_geojson_string}}</textarea></div>
+                                </div>
+                             {%endif%}
+                            </div>
+                                                      
+                            <!-- FormType Name Entry for Editing-->
+                            <div id="form-properties" class="col-md-6">
+                                <div id="form-info" class="panel">
+                                    <div class="panel-heading">{{ formtype.form_type_name }} Properties</div>
+                                    <div class="panel-body">
+                                        <div class="input-group">
+                                            {% if formtype.type == 0 %}
+                                            <div class="input-group-addon property-label">{{ formtype.form_type_name }} ID</div>
+                                            {% elif formtype.type == 1%}
+                                            <div class="input-group-addon property-label">{{ formtype.form_type_name }} URI ID</div>
+                                            {% else %}
+                                            <div class="input-group-addon property-label">{{ formtype.form_type_name }} Entry</div>
+                                            {%endif%}
+                                            <input type="text" name="form_number" value="{{form}}" class="form-control property-value">
+
+                                        </div>
+                                        <div class="input-group"> <div class="input-group-addon property-label">Date Created</div><input type="text" value="{{form.date_created}}" class="form-control property-value" disabled></div>
+                                        <div class="input-group"> <div class="input-group-addon property-label">Created By</div><input type="text" value="{{form.created_by}}" class="form-control property-value" disabled></div>
+                                        <div class="input-group"> <div class="input-group-addon property-label">Last Modified</div><input type="text" value="{{form.date_last_modified}}" class="form-control property-value" disabled></div>
+                                        <div class="input-group"> <div class="input-group-addon property-label">Modified By</div><input type="text" value="{{form.modified_by}}" class="form-control property-value"disabled></div>
+                                        {% if formtype.media_type == 1 %}
+                                             <div class="image-thumb">
+                                                <img class="enki-img-popup" src="{{project.uri_thumbnail}}{%if formtype.uri_prefix != None %}{{formtype.uri_prefix}}{%endif%}{{form}}{{formtype.file_extension}}"/>
+                                                <div><a href="{{project.uri_img}}{%if formtype.uri_prefix != None %}{{formtype.uri_prefix}}{%endif%}{{form}}{{formtype.file_extension}}">Download Image</a></div>
+                                             </div>
+                                        {% elif formtype.media_type == 2 %}
+                                             <div class="image-thumb">
+                                                <embed id="iframe-container-clone" type="application/pdf" src="{{project.uri_download}}{%if formtype.uri_prefix != None %}{{formtype.uri_prefix}}{%endif%}{{form.form_name}}.pdf" style="width:100%; min-height:400px;"></embed>
+                                                <a href="{{project.uri_download}}{%if formtype.uri_prefix != None %}{{formtype.uri_prefix}}{%endif%}{{form}}.pdf">Download Link</a>
+                                             </div>
+
+
+                                        {% endif %}
+                                        {% if formtype.is_hierarchical%}
+                                            <div class="input-group">
+                                                <div class="input-group-addon property-label">Choose an available Parent: </div>
+                                                <select  class="selectpicker" data-size="5" data-width="100%" data-live-search="true" name="hierarchical_reference">
+                                                    <option value="NONE">--None--</option>
+                                                {% for formpk, label in formtype.string_list_hierarchy %}
+                                                    {%if form.pk  != aform.pk %}
+                                                    <option value="{{formpk}}" {%if formpk == form.hierarchy_parent.pk%}selected{%endif%}>{{formtype}}&nbsp;&nbsp;-&nbsp;&nbsp;{% autoescape off %}{{label}}{%endautoescape%}</option>
+                                                    {% endif%}
+                                                {% endfor %} 
+                                                </select>
+                                            </div>
+                                        {% endif %}
+                                    </div>
+                                </div>   
+                            </div>
+                    
+                        </div>
+                    </div>
+                    
+                    <!-- All Attributes -->           
+                    <div id="form-all-fields-grid" class="col-md-12"> 
+                    <div class="loader" hidden></div>
+                        {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
+                            <div class="attribute-float">
+                                <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                <ul class="list-group" title="{{formrecordattributetype}}">
+                                    <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
+                                    {#Make sure our counter class is reset#} 
+                                    {{counter.set_false}}
+                                    {% for formrecordattributevalue in form.formrecordattributevalue_set.all %}
+                                        {% if formrecordattributevalue.record_attribute_type == formrecordattributetype %}
+                                            <li class="list-group-item input-field">
+                                                <textarea name="{{formrecordattributevalue|post_model_type}}{{formrecordattributevalue.pk}}">{{formrecordattributevalue}}</textarea>
+                                           </li>
+                                            {{ counter.set_true }}
+                                        {% elif forloop.last and counter.count != 1 %}
+                                            <li class="list-group-item input-field">
+                                                <textarea name="frav__{{formrecordattributetype.pk}}__new"></textarea>
+                                            </li>
+                                            {{counter.set_false}}
+                                        {% endif %}
+                                    {% endfor %}                                   
+                                </ul>
+                            </div>
+                        {% endfor %}        
+                         
+
+
+                        
+                        {% for FRRT in formtype.ref_to_parent_formtype.all %}  
+                            {% if form.ref_to_parent_form.all %} 
+                                {% for FRRV in form.ref_to_parent_form.all %}
+                                    {% if FRRV.record_reference_type.pk == FRRT.pk %}                        
+                                        <div class="widget-FRRT" title="{{FRRT.pk}}" msg="{{FRRV.pk}}">
+                                            <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                            <div class="frrv-title">
+                                                <div>{{FRRT.record_type|trim_title}}</div>
+                                            </div>
+                                            <div class="frrv-list">
+
+                                                    {% for FRRV_REF in FRRV.record_reference.all %}
+                                                        <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">{{FRRV_REF}}</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+                                                       
+                                                    {% endfor %}
+                                            </div>
+                                            <div class="frrv-search">
+                                                <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrv__{{FRRV.pk}}__ext" value="{{FRRV.external_key_reference}}"></input></div>
+                                                <div><span class="glyphicon glyphicon-search"></span><input type="text"  oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                            </div>
+                                        </div>
+
+                                    {% endif %}
+                                {% endfor %}
+                            {% else %}
+                                    <div class="widget-FRRT" title="{{FRRT.pk}}" msg="NEW">
+                                        <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                        <div class="frrv-title">
+                                            <div>{{FRRT.record_type|trim_title}}</div>
+                                        </div>
+                                        <div class="frrv-list">
+
+                                        </div>
+                                        <div class="frrv-search">
+                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
+                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                        </div>
+                                    </div>
+                                    
+                            {% endif %}
+                        {% endfor %}
+                        
+                        
+                        
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+
+{% endblock %}
+
+
+    {% block footer %}
+    {% if formtype.media_type != 3 %}
+        <script src="{% static 'openlayers/enki/enki_geoeditor_single_entity.js'  %}"></script>   
+        <script src="{% static 'js/enki-iframe-url-tester.js'  %}"></script> 
+        <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script> 
+        <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>              
+    {%endif%}        
+    {% if user_access >= access_level %}
+    <script>
+        $('#edit_form').submit(function(e){
+             e.preventDefault();
+            var formData = $("#edit_form").serializeArray();
+            formData.push({name: 'project_id', value: {{project.pk}} });
+            formData.push({name: 'formtype_id', value: {{formtype.pk}} });
+            formData.push({name: 'form_id', value: {{form.pk}} });
+            $.ajax({ 
+                 url   : 'http://67.205.135.223/admin/save_form_changes/',
+                 type  : "POST",
+                 data  : formData, // data to be submitted
+                 success : function(returnedQuery)
+                 {
+                    console.log(returnedQuery);
+                    
+                 },
+                // handle a non-successful response
+                fail : function(xhr,errmsg,err) {
+                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                }
+            });        
+        
+        }); 
+        
+        $('#toolbar-delete').click( function(){
+        formData = {'ID':'{{form.pk}}'}
+            $.ajax({ 
+                 url   : 'http://67.205.135.223/admin/delete_form/',
+                 type  : "POST",
+                 data  : formData, // data to be submitted
+                 success : function(returnedQuery)
+                 {
+                    console.log(returnedQuery);
+                    window.location.replace($('#next-form-link').attr('href'));
+                    
+                 },
+                // handle a non-successful response
+                fail : function(xhr,errmsg,err) {
+                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                }
+            });        
+        
+        }); 
+        
+        
+        //Function to remove the current reference from the form's FRRT widget-FRRT
+        function removeReferenceFromFRRV(currentRef){
+            $(currentRef).parent().remove();
+            //$(currentRef).parent().find('input').attr('name', $(currentRef).parent().find('input').attr('name') += 'DELETE');
+        }
+        
+        
+        //Function that searches for the given list of forms based upon its formtype
+        
+        function lookForReferenceForms(searchbox, projectID, formtypeID, parentFormTypeID){
+            //First get all the associated data we'll need to send to the server
+            var searchString = $(searchbox).val();
+            var jsonData = {"projectID" : projectID, "formtypeID" : formtypeID, "query" : searchString};
+            console.log (jsonData);
+            //Send and AJAX Request
+            $.ajax({ 
+                     url   : "http://67.205.135.223/admin/get_form_search_list/",
+                     type  : "POST",
+                     data  : jsonData, // data to be submitted
+                     success : function(returnedQuery)
+                     {
+                        //$("#search-box-list").show();
+                        console.log(returnedQuery.form_list);
+                        //Create a dropdown of no more than 5 items
+                        $newSelect = $(searchbox).parent().find('.search-box-list');
+                        $newSelect.empty();
+                        $newSelect.hide();
+                        //Only do something if "form_list" is in the json data
+                        if(returnedQuery['form_list'] != null){
+                            for (i=0; i< returnedQuery.form_list.length; i++){
+                                var currentForm = returnedQuery.form_list[i];
+                                if (currentForm.label.length > 24){ 
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
+                                } else {
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');                           
+                                }
+                                $newSelect.append($newListItem);
+                            }
+                            //For another robust solution--let's modify the text size to be smaller if it's longer than 30 characterSet
+                            $newSelect.children().each( function() {
+                               if ($(this).children().first().text().length > 30) $(this).children().first().addClass('form-nav-search-sml-txt'); 
+                            });
+                            $newSelect.show();
+                        }2
+                     },
+
+                    // handle a non-successful response
+                    fail : function(xhr,errmsg,err) {
+                        console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                    }
+                });    
+            
+        }
+        //This makes the search box disappear when clicking off the box
+        $(document).mouseup(function(e) 
+{
+            var container = $(".search-box-list");
+
+            // if the target of the click isn't the container nor a descendant of the container
+            if (!container.is(e.target) && container.has(e.target).length === 0) 
+            {
+                container.hide();
+            }
+    
+    
+        });
+        
+        //Function adds a ref to the FRRT list box
+        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id){
+            console.log(frrt_id);
+            $currentWidget = $('.widget-FRRT[title="'+frrt_id+'"]')
+            console.log($currentWidget[0]);
+            if ($currentWidget.attr('msg') == "NEW"){
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+            } else  {
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+            } 
+
+            $(".search-box-list").hide();          
+
+        }
+        
+    var Xmin = 0;
+    var Xmax = 100;
+    var Ymin = 0;
+    var Ymax = 100;
+    var lastX = 0;
+    var lastY = 0;
+    $currentWidget = null;
+    
+    var widgetMouseMove = function(e){
+        var currentPosition = $currentWidget.position();
+        $currentWidget.css('position', 'absolute');
+        console.log(currentPosition.left);        
+        console.log(e.clientX + "  :  " + lastX);
+       if (e.clientX > lastX){//We're dragging right
+            console.log('calc('+currentPosition.left+'px + 1%)');
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px + 1%)' );
+       } else if (e.clientX < lastX) {//We're dragging left
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px - 1%)' );
+            if($currentWidget)
+       } else { //We are hovering and not moving
+            $currentWidget.css('left', 'calc('+currentPosition.left+'px)' );
+       }
+       
+       if (e.clientY > lastY){//We're dragging down
+       
+       } else if (e.clientY < lastY) {//We're dragging up
+       
+       } else { //We are hovering and not moving
+       
+       }
+        //console.log(e);
+        lastX = e.clientX;
+    };
+    
+    $('.widget-control').mousedown(function(e){
+        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
+        document.addEventListener('mousemove', widgetMouseMove, false);
+        console.log(e);
+        $currentWidget = $(e.currentTarget).parent();
+        
+        console.log($currentWidget);
+        lastX = e.clientX;
+        lastY = e.clientY;
+    
+    });
+    $(document).mouseup(function(e){
+        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
+        document.removeEventListener('mousemove', widgetMouseMove, false);
+    
+    });
+
+     
+    </script>
+    {% endif %}
+    {% endblock %}
