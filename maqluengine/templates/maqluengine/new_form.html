@@ -54,7 +54,7 @@
         
         
         
-            <div style="height:10px;"></div>
+
             <form id="new-form" method="post">
                 {% if user_access >= access_level %}
                 {% csrf_token %}
@@ -67,8 +67,8 @@
                 <input type="submit" id="submit-delete-form" class="hidden" name='delete-form-type'>
                 <input type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
                 
-                <div id="form-header" class="row">
-                    <div class="col-md-12">
+                <div id="form-header" class="">
+                    <div class="">
                         <div class="row header-container">
                             <div class="col-md-6">
                                 <div id="geospatial" style="min-height:400px;">
@@ -118,20 +118,21 @@
                     <!-- All Attributes -->
                   
                     
-                    <div id="form-all-fields-grid" class="col-md-12">  
+                    <div id="form-all-fields-grid" class="">  
+                        <div class="layout-container">
                             {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
-                                <div class="attribute-float">
+                                <div class="attribute-float frat" id="{{formrecordattributetype.pk}}">
                                     <ul class="list-group" title="{{formrecordattributetype}}">
                                         <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
                                         <li class="list-group-item input-field">
-                                            <textarea rows="1" name="{{formrecordattributetype|post_model_type}}{{formrecordattributetype.pk}}"></textarea>
+                                            <textarea name="{{formrecordattributetype|post_model_type}}{{formrecordattributetype.pk}}"></textarea>
                                         </li>
                                     </ul>
                                 </div>
                             {% endfor %}
                         {% for FRRT in formtype.ref_to_parent_formtype.all %}  
 
-                                    <div class="widget-FRRT" title="{{FRRT.pk}}" msg="NEW">
+                                    <div class="widget-FRRT frrt"  id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="NEW">
                                         <div class="frrv-title">
                                             <div>{{FRRT.record_type|trim_title}}</div>
                                         </div>
@@ -146,6 +147,7 @@
                                     
 
                         {% endfor %}
+                        </div>
                     </div>
                     
                                 <div class="row-fluid"> 
@@ -161,7 +163,7 @@
 {% endblock %}
 
     {% block footer %}
-     <script src="{% static 'openlayers/enki/enki_geoeditor_single_entity.js'  %}"></script> 
+     <script src="{% static 'js/enki_geoeditor_single_entity.js'  %}"></script> 
      <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>       
     {% if user_access >= access_level %}
     <script>
@@ -272,7 +274,111 @@
             $(".search-box-list").hide();          
 
         }
+
+
+
+    function setNeededHeightOfForm(){
+        var largestY = 0;
+        $('.layout-container').children().each( function(){
+            var thisY = $(this).outerHeight() + $(this).position().top;
+            console.log(thisY);
+            if (largestY < thisY) largestY = thisY;
+        });
         
+        console.log("settomg height: " + largestY);
+        $('.layout-container').css('height', largestY+"px");
+    }
+    
+    function loadTemplateJson(reset){
+        //This function loads the json template string provided by the formtype
+        //  --This string can contain several templates, but will always have a 'default' template that is initially loaded.
+        //  --This allows the admin to create different templates for different purposes--e.g. one template might be better for
+        //  ----data-entry while another might make more sense for just viewing the individual forms. All template will be provided
+        //  ----to each form django view, but will default to the default template unless the user has a stored preference
+        //
+        //The json has the following format:
+        //  -- {[
+        //          {"default":[
+        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
+        //                      "width":"20%",   -- The width in percentage of the widget
+        //                      "height":"20px", -- The height in pixels of the widget
+        //                      "top":"20px",    -- The top value in pixels of the widget
+        //                      "left":"20%"     -- The left value in percentage of the widget
+        //                    },
+        //                     ]
+        //          },
+        //          {"new_template":[ {....      --This is any other templates that may have been created
+        //                            ....
+        //                     } ]
+        //          },
+        //     ]}
+       
+        var currentTemplate = '{{formtype.template_json|safe}}';
+        console.log(currentTemplate);
+        //If not a new template
+       if(currentTemplate != "" && !reset && currentTemplate != "None"){
+            var template = JSON.parse(currentTemplate);
+            console.log('sanity test');
+            var widgets = template['default'];
+            
+            //loop through each 
+            for (var i = 0; i < widgets.length; i++){
+                var widget = widgets[i];
+                $currentWidget = $('#'+widget.id);
+                console.log($currentWidget);
+                $currentWidget.css('position', 'absolute');
+                if ($currentWidget.hasClass('frat')){
+                    console.log("What's happening?!?!?!");
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('min-width', '15%');
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+                    $currentWidget.find('textarea').css('width', '100%');
+                    console.log($currentWidget.outerHeight()-25);
+                    $currentWidget.find('textarea').css('height',  $currentWidget.outerHeight()-25);
+
+                } else {
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+
+                }
+            }
+            
+        } else {
+            var left = 0;
+            var top = 0;
+            console.log('sanity test2');
+            $('.widget').each( function(){
+                console.log($(this));
+                $(this).css('position', 'absolute');
+                if ($(this).hasClass('frat')){
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('min-width', '15%');
+                    $(this).css('width', '20%');
+                    $(this).css('height','50px');
+                    $(this).find('textarea').css('width', '100%');
+                    $(this).find('textarea').css('height', '25px');
+                    if(left == 75) {left = 0; top+=75;}
+                    else {left += 25;}
+                } else {
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('width', '25%');
+                    $(this).css('height', '150px');
+                    if(left == 75){ left = 0; top+=150;}
+                    else {left += 25;}
+                } 
+            });        
+        
+        }
+        setNeededHeightOfForm();    
+    }        
+    
+    loadTemplateJson(false);
     </script>
     {% endif %}     
    {% endblock %}

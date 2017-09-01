@@ -1,4 +1,5 @@
 
+
 from django.conf import settings
 from django.conf.urls import include, patterns, url
 from django.contrib import admin
@@ -12,10 +13,7 @@ def bad(request):
 
 urlpatterns = patterns('',
     # Examples:
-
-
-    url(r'', include('maqluengine.urls')),
-
+    url(r'', include('maqluengine.urls')),     
     url(r'^admin/', include(admin.site.urls)),
     url(r'^bad/$', bad),
 )

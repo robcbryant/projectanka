@@ -68,9 +68,9 @@
                 <input type="submit" id="submit-delete-form" class="hidden" name='delete-form-type'>
                 <input type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
                 
-                <div id="form-header" class="row">
+                <div id="form-header" class="">
               
-                    <div class="col-md-12">
+                    <div class="">
                         <div class="row header-container">
                             <div class="col-md-6">
                              {% if formtype.media_type == 3 %}
@@ -149,80 +149,82 @@
                     </div>
                     
                     <!-- All Attributes -->           
-                    <div id="form-all-fields-grid" class="col-md-12"> 
-                    <div class="loader" hidden></div>
-                        {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
-                            <div class="attribute-float">
-                                <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
-                                <ul class="list-group" title="{{formrecordattributetype}}">
-                                    <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
-                                    {#Make sure our counter class is reset#} 
-                                    {{counter.set_false}}
-                                    {% for formrecordattributevalue in form.formrecordattributevalue_set.all %}
-                                        {% if formrecordattributevalue.record_attribute_type == formrecordattributetype %}
-                                            <li class="list-group-item input-field">
-                                                <textarea name="{{formrecordattributevalue|post_model_type}}{{formrecordattributevalue.pk}}">{{formrecordattributevalue}}</textarea>
-                                           </li>
-                                            {{ counter.set_true }}
-                                        {% elif forloop.last and counter.count != 1 %}
-                                            <li class="list-group-item input-field">
-                                                <textarea name="frav__{{formrecordattributetype.pk}}__new"></textarea>
-                                            </li>
-                                            {{counter.set_false}}
-                                        {% endif %}
-                                    {% endfor %}                                   
-                                </ul>
-                            </div>
-                        {% endfor %}        
-                         
-
-
+                    <div id="form-all-fields-grid" class=""> 
+                        <div class="layout-container">
                         
-                        {% for FRRT in formtype.ref_to_parent_formtype.all %}  
-                            {% if form.ref_to_parent_form.all %} 
-                                {% for FRRV in form.ref_to_parent_form.all %}
-                                    {% if FRRV.record_reference_type.pk == FRRT.pk %}                        
-                                        <div class="widget-FRRT" title="{{FRRT.pk}}" msg="{{FRRV.pk}}">
-                                            <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
-                                            <div class="frrv-title">
-                                                <div>{{FRRT.record_type|trim_title}}</div>
-                                            </div>
-                                            <div class="frrv-list">
+                            <div class="loader" hidden></div>
+                                {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
+                                    <div class="attribute-float frat" id="{{formrecordattributetype.pk}}">
+                                        
+                                        <ul class="list-group" title="{{formrecordattributetype}}">
+                                            <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
+                                            {#Make sure our counter class is reset#} 
+                                            {{counter.set_false}}
+                                            {% for formrecordattributevalue in form.formrecordattributevalue_set.all %}
+                                                {% if formrecordattributevalue.record_attribute_type == formrecordattributetype %}
+                                                    <li class="list-group-item input-field">
+                                                        <textarea name="{{formrecordattributevalue|post_model_type}}{{formrecordattributevalue.pk}}">{{formrecordattributevalue}}</textarea>
+                                                   </li>
+                                                    {{ counter.set_true }}
+                                                {% elif forloop.last and counter.count != 1 %}
+                                                    <li class="list-group-item input-field">
+                                                        <textarea name="frav__{{formrecordattributetype.pk}}__new"></textarea>
+                                                    </li>
+                                                    {{counter.set_false}}
+                                                {% endif %}
+                                            {% endfor %}                                   
+                                        </ul>
+                                    </div>
+                                {% endfor %}        
+                                 
 
-                                                    {% for FRRV_REF in FRRV.record_reference.all %}
-                                                        <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">{{FRRV_REF}}</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
-                                                       
-                                                    {% endfor %}
-                                            </div>
-                                            <div class="frrv-search">
-                                                <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrv__{{FRRV.pk}}__ext" value="{{FRRV.external_key_reference}}"></input></div>
-                                                <div><span class="glyphicon glyphicon-search"></span><input type="text"  oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
-                                            </div>
-                                        </div>
 
+                                
+                                {% for FRRT in formtype.ref_to_parent_formtype.all %}  
+                                    {% if form.ref_to_parent_form.all %} 
+                                        {% for FRRV in form.ref_to_parent_form.all %}
+                                            {% if FRRV.record_reference_type.pk == FRRT.pk %}                        
+                                                <div class="widget-FRRT frrt" id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="{{FRRV.pk}}">
+                                                    <div class="frrv-title">
+                                                        <div>{{FRRT.record_type|trim_title}}</div>
+                                                    </div>
+                                                    <div class="frrv-list">
+
+                                                            {% for FRRV_REF in FRRV.record_reference.all %}
+                                                                <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">{{FRRV_REF}}</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+                                                               
+                                                            {% endfor %}
+                                                    </div>
+                                                    <div class="frrv-search">
+                                                        <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrv__{{FRRV.pk}}__ext" value="{{FRRV.external_key_reference}}"></input></div>
+                                                        <div><span class="glyphicon glyphicon-search"></span><input type="text"  oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                                    </div>
+                                                </div>
+
+                                            {% endif %}
+                                        {% endfor %}
+                                    {% else %}
+                                            <div class="widget-FRRT frrt" id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="NEW">
+                                                <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                                <div class="frrv-title">
+                                                    <div>{{FRRT.record_type|trim_title}}</div>
+                                                </div>
+                                                <div class="frrv-list">
+
+                                                </div>
+                                                <div class="frrv-search">
+                                                    <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
+                                                    <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                                </div>
+                                            </div>
+                                            
                                     {% endif %}
                                 {% endfor %}
-                            {% else %}
-                                    <div class="widget-FRRT" title="{{FRRT.pk}}" msg="NEW">
-                                        <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
-                                        <div class="frrv-title">
-                                            <div>{{FRRT.record_type|trim_title}}</div>
-                                        </div>
-                                        <div class="frrv-list">
-
-                                        </div>
-                                        <div class="frrv-search">
-                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
-                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
-                                        </div>
-                                    </div>
-                                    
-                            {% endif %}
-                        {% endfor %}
-                        
-                        
-                        
+                                
+                                
+                                
                         </div>
+                    </div>
                     </div>
                 </div>
             </form>
@@ -235,7 +237,7 @@
 
     {% block footer %}
     {% if formtype.media_type != 3 %}
-        <script src="{% static 'openlayers/enki/enki_geoeditor_single_entity.js'  %}"></script>   
+        <script src="{% static 'js/enki_geoeditor_single_entity.js'  %}"></script>   
         <script src="{% static 'js/enki-iframe-url-tester.js'  %}"></script> 
         <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script> 
         <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>              
@@ -370,58 +372,110 @@
 
         }
         
-    var Xmin = 0;
-    var Xmax = 100;
-    var Ymin = 0;
-    var Ymax = 100;
-    var lastX = 0;
-    var lastY = 0;
-    $currentWidget = null;
-    
-    var widgetMouseMove = function(e){
-        var currentPosition = $currentWidget.position();
-        $currentWidget.css('position', 'absolute');
-        console.log(currentPosition.left);        
-        console.log(e.clientX + "  :  " + lastX);
-       if (e.clientX > lastX){//We're dragging right
-            console.log('calc('+currentPosition.left+'px + 1%)');
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px + 1%)' );
-       } else if (e.clientX < lastX) {//We're dragging left
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px - 1%)' );
-            if($currentWidget)
-       } else { //We are hovering and not moving
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px)' );
-       }
-       
-       if (e.clientY > lastY){//We're dragging down
-       
-       } else if (e.clientY < lastY) {//We're dragging up
-       
-       } else { //We are hovering and not moving
-       
-       }
-        //console.log(e);
-        lastX = e.clientX;
-    };
-    
-    $('.widget-control').mousedown(function(e){
-        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
-        document.addEventListener('mousemove', widgetMouseMove, false);
-        console.log(e);
-        $currentWidget = $(e.currentTarget).parent();
+   
+    function setNeededHeightOfForm(){
+        var largestY = 0;
+        $('.layout-container').children().each( function(){
+            var thisY = $(this).outerHeight() + $(this).position().top;
+            console.log(thisY);
+            if (largestY < thisY) largestY = thisY;
+        });
         
-        console.log($currentWidget);
-        lastX = e.clientX;
-        lastY = e.clientY;
+        console.log("settomg height: " + largestY);
+        $('.layout-container').css('height', largestY+"px");
+    }
     
-    });
-    $(document).mouseup(function(e){
-        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
-        document.removeEventListener('mousemove', widgetMouseMove, false);
-    
-    });
+    function loadTemplateJson(reset){
+        //This function loads the json template string provided by the formtype
+        //  --This string can contain several templates, but will always have a 'default' template that is initially loaded.
+        //  --This allows the admin to create different templates for different purposes--e.g. one template might be better for
+        //  ----data-entry while another might make more sense for just viewing the individual forms. All template will be provided
+        //  ----to each form django view, but will default to the default template unless the user has a stored preference
+        //
+        //The json has the following format:
+        //  -- {[
+        //          {"default":[
+        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
+        //                      "width":"20%",   -- The width in percentage of the widget
+        //                      "height":"20px", -- The height in pixels of the widget
+        //                      "top":"20px",    -- The top value in pixels of the widget
+        //                      "left":"20%"     -- The left value in percentage of the widget
+        //                    },
+        //                     ]
+        //          },
+        //          {"new_template":[ {....      --This is any other templates that may have been created
+        //                            ....
+        //                     } ]
+        //          },
+        //     ]}
+       
+        var currentTemplate = '{{formtype.template_json|safe}}';
+        console.log(currentTemplate);
+        //If not a new template
+       if(currentTemplate != "" && !reset && currentTemplate != "None"){
+            var template = JSON.parse(currentTemplate);
+            console.log('sanity test');
+            var widgets = template['default'];
+            
+            //loop through each 
+            for (var i = 0; i < widgets.length; i++){
+                var widget = widgets[i];
+                $currentWidget = $('#'+widget.id);
+                console.log($currentWidget);
+                $currentWidget.css('position', 'absolute');
+                if ($currentWidget.hasClass('frat')){
+                    console.log("What's happening?!?!?!");
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('min-width', '15%');
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+                    $currentWidget.find('textarea').css('width', '100%');
+                    console.log($currentWidget.outerHeight()-25);
+                    $currentWidget.find('textarea').css('height',  $currentWidget.outerHeight()-25);
 
-     
+                } else {
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+
+                }
+            }
+            
+        } else {
+            var left = 0;
+            var top = 0;
+            console.log('sanity test2');
+            $('.widget').each( function(){
+                console.log($(this));
+                $(this).css('position', 'absolute');
+                if ($(this).hasClass('frat')){
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('min-width', '15%');
+                    $(this).css('width', '20%');
+                    $(this).css('height','50px');
+                    $(this).find('textarea').css('width', '100%');
+                    $(this).find('textarea').css('height', '25px');
+                    if(left == 75) {left = 0; top+=75;}
+                    else {left += 25;}
+                } else {
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('width', '25%');
+                    $(this).css('height', '150px');
+                    if(left == 75){ left = 0; top+=150;}
+                    else {left += 25;}
+                } 
+            });        
+        
+        }
+        setNeededHeightOfForm(false);
+        
+    }
+
+     loadTemplateJson();
     </script>
     {% endif %}
     {% endblock %}

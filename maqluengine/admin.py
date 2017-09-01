@@ -353,8 +353,56 @@ class MyAdminSite(AdminSite):
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
-  
-  
+ 
+
+    #=======================================================#
+    #   ACCESS LEVEL :  4     CREATE_NEW_FORM_TYPE_TEMPLATE()
+    #=======================================================#        
+    def create_new_form_type_template(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes in POST data submitted by a user to add a new template to the formtype's existing json object string
+        #   --if the template name is the same name as an existing template, it will simply overwrite it.
+        #   --First it converts the json string to a python dict and adds a key with the same template name
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                print >>sys.stderr, request.POST
+                if 'formtype_id' in request.POST:
+                    currentFormType = FormType.objects.get(pk=request.POST['formtype_id'], project=request.user.permissions.project)
+                    
+                    #Convert the new template in the POST to a python Dict
+                    newTemplateString = request.POST['template_json']
+                    newTemplateDict = json.loads(newTemplateString)
+                    print >>sys.stderr, currentFormType.template_json
+                    #Convert the formtype's json to a python dict
+                    currentTemplateString = currentFormType.template_json
+                    if currentTemplateString != "" and currentTemplateString != None:
+                        currentTemplateDict = json.loads(currentTemplateString)
+                        for key in newTemplateDict:
+                            currentTemplateDict[key] = newTemplateDict[key]
+                        currentFormType.template_json = json.dumps(currentTemplateDict)
+                    else:
+                        currentFormType.template_json = newTemplateString
+                    
+                    
+                    currentFormType.save();
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
+                     
     #=======================================================#
     #   ACCESS LEVEL :  4     CREATE_NEW_FORM_TYPE()
     #=======================================================#        
@@ -3433,6 +3481,7 @@ class MyAdminSite(AdminSite):
             url(r'^save_form_changes/$', admin.site.admin_view(self.save_form_changes), name='save_form_changes'),
             url(r'^create_new_form/$', admin.site.admin_view(self.create_new_form), name='create_new_form'),
             url(r'^create_new_form_type/$', admin.site.admin_view(self.create_new_form_type), name='create_new_form_type'),
+            url(r'^create_new_form_type_template/$', admin.site.admin_view(self.create_new_form_type_template), name='create_new_form_type_template'),
             url(r'^run_form_type_importer/$', admin.site.admin_view(self.run_form_type_importer), name='run_form_type_importer'),
             url(r'^get_previous_next_forms/$', admin.site.admin_view(self.get_previous_next_forms), name='get_previous_next_forms'),
             url(r'^username_taken/$', admin.site.admin_view(self.username_taken), name='username_taken'),

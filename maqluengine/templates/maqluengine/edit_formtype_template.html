@@ -40,7 +40,7 @@
                     
                     {% if user_access >= access_level %}
                     <div class="btn-group btn-group-sm save-delete-buttons" role="group">
-                        <label for="submit-form" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn btn-success" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
+                        <label id="save-template" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn btn-success" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
                         
                         <button id="toolbar-delete" class="btn btn-danger" disabled><span class="glyphicon glyphicon-trash"></span></button>
 
@@ -53,8 +53,7 @@
              </form>
         
         
-        
-            <div style="height:10px;"></div>
+
             <form id="new-form" method="post">
                 {% if user_access >= access_level %}
                 {% csrf_token %}
@@ -67,8 +66,8 @@
                 <input type="submit" id="submit-delete-form" class="hidden" name='delete-form-type'>
                 <input type="text" class="hidden" name='sesID' value="{{ -1|getUniqueSessionToken }}">
                 
-                <div id="form-header" class="row">
-                    <div class="col-md-12">
+                <div id="form-header" class="">
+                    <div class="">
                         <div class="row header-container">
                             <div class="col-md-6">
                                 <div id="geospatial" style="min-height:400px;">
@@ -118,21 +117,24 @@
                     <!-- All Attributes -->
                   
                     
-                    <div id="form-all-fields-grid" class="col-md-12">  
+                    <div id="form-all-fields-grid" class="">
+                    <button id="reset-layout" class="btn" type="button"><span class="glyphicon glyphicon-refresh"></span></button>
+                        <div class="layout-container">
                             {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
-                                <div class="attribute-float">
+                                <div class="attribute-float widget frat" id="{{formrecordattributetype.pk}}">
                                     <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
                                     <ul class="list-group" title="{{formrecordattributetype}}">
                                         <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
                                         <li class="list-group-item input-field">
-                                            <textarea rows="1" name="{{formrecordattributetype|post_model_type}}{{formrecordattributetype.pk}}"></textarea>
+                                            <textarea style="resize:none;" disabled></textarea>
                                         </li>
                                     </ul>
+                                    <div class="btn widget-resize"><span class="glyphicon glyphicon-resize-full"></span></div>
                                 </div>
                             {% endfor %}
                         {% for FRRT in formtype.ref_to_parent_formtype.all %}  
 
-                                    <div class="widget-FRRT" title="{{FRRT.pk}}" msg="NEW">
+                                    <div class="widget-FRRT widget frrt" id="{{FRRT.pk}}">
                                         <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
                                         <div class="frrv-title">
                                             <div>{{FRRT.record_type|trim_title}}</div>
@@ -141,13 +143,15 @@
 
                                         </div>
                                         <div class="frrv-search">
-                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
-                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
+                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" disabled></input></div>
+                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" disabled></input></div>
                                         </div>
+                                        <div class="btn widget-resize"><span class="glyphicon glyphicon-resize-full"></span></div>
                                     </div>
                                     
 
                         {% endfor %}
+                        </div>
                     </div>
                     
                                 <div class="row-fluid"> 
@@ -163,32 +167,11 @@
 {% endblock %}
 
     {% block footer %}
-     <script src="{% static 'openlayers/enki/enki_geoeditor_single_entity.js'  %}"></script> 
+     <script src="{% static 'js/enki_geoeditor_single_entity.js'  %}"></script> 
      <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>       
     {% if user_access >= access_level %}
     <script>
-        $('#new-form').submit(function(e){
-             e.preventDefault();
-            var formData = $("#new-form").serializeArray();
-            formData.push({name: 'project_id', value: {{project.pk}} });
-            formData.push({name: 'formtype_id', value: {{formtype.pk}} });
-            console.log(formData);
-            $.ajax({ 
-                 url   : 'http://67.205.135.223/admin/create_new_form/',
-                 type  : "POST",
-                 data  : formData, // data to be submitted
-                 success : function(returnedQuery)
-                 {
-                    console.log(returnedQuery);
-                    
-                 },
-                // handle a non-successful response
-                fail : function(xhr,errmsg,err) {
-                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
-                }
-            });        
-        
-        });
+
 
 
         //Function to remove the current reference from the form's FRRT widget-FRRT
@@ -285,47 +268,115 @@
     
     var widgetMouseMove = function(e){
         var currentPosition = $currentWidget.position();
-
+        var parentOffset = $currentWidget.parent().offset();
+        var currentParent = $currentWidget.parent()[0];
+        
         $currentWidget.css('position', 'absolute');
-        console.log(currentPosition.left);        
+       // console.log(currentPosition.left);        
         console.log(e.clientX + "  :  " + lastX);
         
-       if (e.clientX > lastX){//We're dragging right
-            console.log('calc('+currentPosition.left+'px + 1%)');
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px + 1%)' );
-            if($currentWidget.position().left  > Xmax ){$currentWidget.css('left', Xmax);}
-       } else if (e.clientX < lastX) {//We're dragging left
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px - 1%)' );
-            if($currentWidget.position().left  < 0 ){$currentWidget.css('left', '0%');}
-       } else { //We are hovering and not moving
-            $currentWidget.css('left', 'calc('+currentPosition.left+'px)' );
-       }
-       
-       if (e.clientY > lastY){//We're dragging down
-            console.log('calc('+currentPosition.top+'px + 1%)');
-            $currentWidget.css('top', 'calc('+currentPosition.top+'px + 2%)' );
-            if($currentWidget.position().top  > Ymax ){
-                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
-            }       
-       } else if (e.clientY < lastY) {//We're dragging up
-            $currentWidget.css('top', 'calc('+currentPosition.top+'px - 2%)' );
-            if($currentWidget.position().top  < 0 ){$currentWidget.css('top', '0%');}    
-            if($currentWidget.position().top  > Ymax ){
-                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
-            }              
-       } else { //We are hovering and not moving
-            $currentWidget.css('top', 'calc('+currentPosition.top+'px)' );
-            if($currentWidget.position().top  > Ymax ){
-                $currentWidget.parent().css('height', currentPosition.top + $currentWidget.height());
-            }  
-       }
-        //console.log(e);
-        lastX = e.clientX;
-        lastY = e.clientY;
+        //Get our relative mouse position: This means the position of the mouse cursor within the widget container.
+        //  --we can take this same position and apply it to the corner position of the widget itself
+        var relativeMousePosX = e.pageX - parentOffset.left;
+        var relativeMousePosY = e.pageY - parentOffset.top;
+        console.log (relativeMousePosX +" : "+ parentOffset.left);
+        
+        //Here we need to figure out the relative 'steps' that we will allow the widget to move.
+        //  --The X can only be a step of 5% of the total parent div size
+        //  --The Y can only be a step of 25px
+
+        //Our raw X step value of 5% is the (total container width / 100) * 5
+        var rawXStepVal = (currentParent.offsetWidth / 100) * 5;
+        
+        //We need to round our widget's X position to the closest stepped value of the current mouse position
+        var finalSteppedX = Math.floor(relativeMousePosX/rawXStepVal)*rawXStepVal;
+        //Our raw Y step value is simply 25px;
+        var rawYStepVal = 25;
+        //Our steppedY will be the same process as finding the sepped x; we are just finding the nearest multiple of that value
+        var finalSteppedY = Math.floor(relativeMousePosY/rawYStepVal)*rawYStepVal;
+        
+        console.log(currentParent.offsetWidth);
+        console.log(currentParent);
+        console.log ("rawX: " + rawXStepVal + " and relMousePos: " + relativeMousePosX);
+        console.log (finalSteppedX + "  X -- : -- Y  " + finalSteppedY);
+        
+        if (finalSteppedX < 0) finalSteppedX = 0;
+        else if(finalSteppedX > Xmax) finalSteppedX = Xmax;
+        
+        if (finalSteppedY < 0) finalSteppedY = 0;
+        
+        
+        console.log(String(finalSteppedX/(currentParent.offsetWidth/100))+"%");
+        //Now set our widget's left and top position to our new stepped x / y values
+        $currentWidget.css('top', finalSteppedY);
+        //converting our X BACK to a percentge ensures the widget divs resize on screen resize
+        $currentWidget.css('left', String(finalSteppedX/(currentParent.offsetWidth/100))+"%");
+        
+        setNeededHeightOfForm()
+        
     };
+
+
+    var widgetMouseResize = function(e){
+        var currentPosition = $currentWidget.position();
+        var parentOffset = $currentWidget.parent().offset();
+        var currentParent = $currentWidget.parent()[0];
+        
+        $currentWidget.css('position', 'absolute');
+       // console.log(currentPosition.left);        
+        console.log(e.clientX + "  :  " + lastX);
+        
+        //Get our relative mouse position: This means the position of the mouse cursor within the widget container.
+        //  --we can take this same position and apply it to the corner position of the widget itself
+        var relativeMousePosX = e.pageX - parentOffset.left;
+        var relativeMousePosY = e.pageY - parentOffset.top;
+        console.log (relativeMousePosX +" : "+ parentOffset.left);
+        
+        //Here we need to figure out the relative 'steps' that we will allow the widget to move.
+        //  --The X can only be a step of 5% of the total parent div size
+        //  --The Y can only be a step of 25px
+
+        //Our raw X step value of 5% is the (total container width / 100) * 5
+        var rawXStepVal = (currentParent.offsetWidth / 100) * 5;
+        
+        //We need to round our widget's X position to the closest stepped value of the current mouse position
+        var finalSteppedX = Math.floor(relativeMousePosX/rawXStepVal)*rawXStepVal;
+        //Our raw Y step value is simply 25px;
+        var rawYStepVal = 25;
+        //Our steppedY will be the same process as finding the sepped x; we are just finding the nearest multiple of that value
+        var finalSteppedY = Math.floor(relativeMousePosY/rawYStepVal)*rawYStepVal;
+        
+        
+        //Make sure the resize can't extend past the form bounding box
+        if(finalSteppedX > Xmax) finalSteppedX = Xmax;
+        
+        
+        var right = currentPosition.left + $currentWidget.outerWidth();
+        var bottom = currentPosition.top + $currentWidget.outerHeight();
+        var widthAdjustment = finalSteppedX - right;
+        var heightAdjustment = finalSteppedY - bottom;
+        
+        var finalWidth = ($currentWidget.outerWidth()+widthAdjustment)/(currentParent.offsetWidth/100);
+        var finalHeight = $currentWidget.outerHeight()+ heightAdjustment;
+
+        //make sure our final heights and widths are greater than the minimum size of our default widget
+        if (finalWidth < 20) finalWidth = 20;
+        if($currentWidget.hasClass('frat')){if (finalHeight < 50) finalHeight = 50;}
+        else {if (finalHeight < 150) finalHeight = 150;}
+        
+        //Now set our widget's left and top position to our new stepped x / y values
+        $currentWidget.css('height', finalHeight + 'px');
+        //converting our X BACK to a percentge ensures the widget divs resize on screen resize
+        $currentWidget.css('width', finalWidth+"%");
+        if($currentWidget.hasClass('frat')) $currentWidget.find('textarea').css('height', (finalHeight-25) + "px");
+        
+        setNeededHeightOfForm()
+        
+    }    
+
     
     $('.widget-control').mousedown(function(e){
-        //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
+        //While the left mouse button is held down over the widget control, move the widget container according to the mouse movements
         document.addEventListener('mousemove', widgetMouseMove, false);
         console.log(e);
         $currentWidget = $(e.currentTarget).parent();
@@ -344,12 +395,221 @@
         }
     
     });
+    $('.widget-resize').mousedown(function(e){
+        //While the left mouse button is held down over the widget control, move the widget container according to the mouse movements
+        document.addEventListener('mousemove', widgetMouseResize, false);
+        console.log(e);
+        $currentWidget = $(e.currentTarget).parent();
+        
+        console.log($currentWidget);
+        lastX = e.clientX;
+        lastY = e.clientY;
+        
+        Xmax = $currentWidget.parent().width();
+        Ymax = $currentWidget.parent().height();
+        console.log(Ymax);
+        if(Ymax < 0) {
+            console.log('to low');
+            $currentWidget.parent().css('height', $currentWidget.height());
+            Ymax = 0;
+        }
     
+    });    
     $(document).mouseup(function(e){
         //While the left mouse button is held down over the wdiget control, move the widget container according to the mouse movements
         document.removeEventListener('mousemove', widgetMouseMove, false);
+        document.removeEventListener('mousemove', widgetMouseResize, false);
+    });
+    
+     $('.layout-container textarea').mousedown( function(e){
+        $(e.currentTarget).parent().parent().parent().css('width', '15%');
+     });
+     
+/*    $('.layout-container textarea').mouseup( function(e){
+        
+        $thisTextArea = $(e.currentTarget)
+         //Our raw X step value of 5% is the (total container width / 100) * 5
+        var rawXStepVal = ($('.layout-container')[0].offsetWidth / 100) * 5;
+        console.log($thisTextArea.parent().parent().parent());
+        //We need to round our widget's X position to the closest stepped value of the current mouse position
+        var finalSteppedX = Math.round($thisTextArea.width()/rawXStepVal)*rawXStepVal;
+        //Our raw Y step value is simply 25px;
+        var rawYStepVal = 25;
+        //Our steppedY will be the same process as finding the sepped x; we are just finding the nearest multiple of that value
+        var finalSteppedY = Math.round($thisTextArea.outerHeight()/rawYStepVal)*rawYStepVal;
+        console.log("Height: " + $thisTextArea.height() + "  --  Width: " + $thisTextArea.width() + "  --  rawx: " + finalSteppedX + "  --  rawx2: " + rawXStepVal + "  --  rawy: " + finalSteppedY );
+        $thisTextArea.parent().parent().parent().css('width', String(finalSteppedX/($('.layout-container')[0].offsetWidth / 100)) + "%");
+        $thisTextArea.css('height', finalSteppedY);
+        $thisTextArea.css('width', '100%');
+        console.log("Height: " + $thisTextArea.height() + "  --  Width: " + $thisTextArea.width() + "  --  rawx: " + rawXStepVal + "  --  rawy: " + finalSteppedY );
+    }); */
+    
+    function setNeededHeightOfForm(){
+        var largestY = 0;
+        $('.layout-container').children().each( function(){
+            var thisY = $(this).outerHeight() + $(this).position().top;
+            console.log(thisY);
+            if (largestY < thisY) largestY = thisY;
+        });
+        
+        console.log("settomg height: " + largestY);
+        $('.layout-container').css('height', largestY+"px");
+    }
+    
+    function loadTemplateJson(reset){
+        //This function loads the json template string provided by the formtype
+        //  --This string can contain several templates, but will always have a 'default' template that is initially loaded.
+        //  --This allows the admin to create different templates for different purposes--e.g. one template might be better for
+        //  ----data-entry while another might make more sense for just viewing the individual forms. All template will be provided
+        //  ----to each form django view, but will default to the default template unless the user has a stored preference
+        //
+        //The json has the following format:
+        //  -- {[
+        //          {"default":[
+        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
+        //                      "width":"20%",   -- The width in percentage of the widget
+        //                      "height":"20px", -- The height in pixels of the widget
+        //                      "top":"20px",    -- The top value in pixels of the widget
+        //                      "left":"20%"     -- The left value in percentage of the widget
+        //                    },
+        //                     ]
+        //          },
+        //          {"new_template":[ {....      --This is any other templates that may have been created
+        //                            ....
+        //                     } ]
+        //          },
+        //     ]}
+       
+        var currentTemplate = '{{formtype.template_json|safe}}';
+        console.log(currentTemplate);
+        //If not a new template
+       if(currentTemplate != "" && !reset && currentTemplate != "None"){
+            var template = JSON.parse(currentTemplate);
+            console.log('sanity test');
+            var widgets = template['default'];
+            
+            //loop through each 
+            for (var i = 0; i < widgets.length; i++){
+                var widget = widgets[i];
+                $currentWidget = $('#'+widget.id);
+                console.log($currentWidget);
+                $currentWidget.css('position', 'absolute');
+                if ($currentWidget.hasClass('frat')){
+                    console.log("What's happening?!?!?!");
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('min-width', '15%');
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+                    $currentWidget.find('textarea').css('width', '100%');
+                    $currentWidget.find('textarea').css('height',  $currentWidget.find('textarea').parent().parent().parent().outerHeight()-25);
+
+                } else {
+                    $currentWidget.css('left', widget.left);
+                    $currentWidget.css('top', widget.top);
+                    $currentWidget.css('width', widget.width);
+                    $currentWidget.css('height', widget.height);
+
+                }
+            }
+            
+        } else {
+            var left = 0;
+            var top = 0;
+            console.log('sanity test2');
+            $('.widget').each( function(){
+                console.log($(this));
+                $(this).css('position', 'absolute');
+                if ($(this).hasClass('frat')){
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('min-width', '15%');
+                    $(this).css('width', '20%');
+                    $(this).css('height','50px');
+                    $(this).find('textarea').css('width', '100%');
+                    $(this).find('textarea').css('height', '25px');
+                    if(left == 75) {left = 0; top+=75;}
+                    else {left += 25;}
+                } else {
+                    $(this).css('left', left+'%');
+                    $(this).css('top', top+'px');
+                    $(this).css('width', '25%');
+                    $(this).css('height', '150px');
+                    if(left == 75){ left = 0; top+=150;}
+                    else {left += 25;}
+                } 
+            });        
+        
+        }
+        setNeededHeightOfForm();
+        
+    }
+    
+    $('#save-template').click( function() {
+        var jsondata = saveTemplateToJsonString();
+
+        var formData = {"formtype_id":"{{formtype.pk}}","template_json":JSON.stringify(jsondata)};
+        console.log(formData);
+        $.ajax({ 
+             url   : '{% url 'maqlu_admin:create_new_form_type_template'%}',
+             type  : "POST",
+             data  : formData, // data to be submitted
+             success : function(returnedQuery)
+             {
+                console.log(returnedQuery);
+                
+             },
+            // handle a non-successful response
+            fail : function(xhr,errmsg,err) {
+                console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+            }
+        });        
+
     
     });
+   
+
+   function saveTemplateToJsonString(){
+        //This function loops through each widget element in the formtype view page, and assigns their values to a formatted string of
+        //  --json that is sent back to the server and stored in the formtypes template json field
+        //
+        //The json has the following format:
+        //  -- {
+        //         "name_of_template":[
+        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
+        //                      "width":"20%",   -- The width in percentage of the widget
+        //                      "height":"20px", -- The height in pixels of the widget
+        //                      "top":"20px",    -- The top value in pixels of the widget
+        //                      "left":"20%"     -- The left value in percentage of the widget
+        //                    },
+        //                     ]
+        //     }
+    
+        //TODO: FOR now-- we will ALWAYS edit the DEFAULT template
+        //Let's set up our json object to add to our current template object already loaded
+        var newTemplate = [];
+        
+        
+        //Let's loop through each element in the main widget container
+        $('#form-all-fields-grid .layout-container').children().each( function(){
+            var widget = {};
+            widget.id = this.id;
+            widget.width = Math.round($(this).outerWidth()/(this.parentNode.offsetWidth/100)) + "%";
+            widget.height = Math.round($(this).outerHeight()) + "px";
+            widget.top = Math.round($(this).position().top) + "px";
+            widget.left = Math.round($(this).position().left/(this.parentNode.offsetWidth/100))+"%";
+            newTemplate.push(widget);
+        });
+        
+        newTemplate = { 'default':newTemplate};
+        console.log(newTemplate);
+        return newTemplate;
+    }
+    
+    $('#reset-layout').click(function(){
+        loadTemplateJson(true);
+    });
+    window.loadTemplateJson(false);
        
     </script>
     {% endif %}     

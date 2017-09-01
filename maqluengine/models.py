@@ -140,6 +140,11 @@ class FormType(models.Model):
     file_extension = models.CharField(max_length=10, blank=True, null=True)
     uri_prefix = models.CharField(max_length=20, blank=True, null=True)
     is_hierarchical = models.BooleanField(default=False)#determines whether or not the formtype's forms follow a hierchical structure
+
+    #----------------------------
+    # Templating 
+    template_json = models.TextField(blank=True, null=True)
+    
     #-----------------------------
     # Restrictive Access variables
     is_public = models.BooleanField(default=False)
