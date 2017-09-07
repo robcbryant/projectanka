@@ -293,7 +293,15 @@ class Form(models.Model):
             return self.form_name
         else:
            return "No Form Num"
-           
+    def get_ref_thumbnail(self):
+        #--If the current form IS a media type already, then use itself to grab the thumbnail URI
+        if self.form_type.type == 1:
+           return self.get_thumbnail_type()
+        else:
+           #offer a default to "NO PREVIEW" if not found
+           return staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
+        
+    
     def get_hierarchy_label(self):
         logging.info("We're in the get hierarchy label function")
         label = ""

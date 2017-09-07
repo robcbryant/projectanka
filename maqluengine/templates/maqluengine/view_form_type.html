@@ -231,6 +231,17 @@
 
             </div>
             
+            
+            <div id="query-pagination">
+                <input id="pagination-query-json" value="" hidden disabled></input>
+                <input id="pagination-results-count" value="" hidden disabled></input>
+                <div class="pagination-container" style="display:none;">
+
+                </div>
+            </div>
+        
+
+        
             <form id="find-replace-form" method="post">
             {% csrf_token %}
             
@@ -269,15 +280,134 @@
     <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script>  
     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>  
         {% if user_access >= access_level %} <script src="{% static 'js/enki-view-form-type-find-replace-controls.js' %}"></script>{% endif %}
+    
+    
     <script>
    //***************************************************************************************
    // These functions handle building a new HTML table of the query results for the user
    //***************************************************************************************
  
+    function buildPageNavigationBar(numOfResults, currentPage, currentQueryJson){
+        console.log('Is it working?*****************************');
+        var resultsPerPage = 25;
+        
+        //add our queryjson to the hidden pagination input
+        $('#pagination-query-json').val(currentQueryJson);
+        $('#pagination-results-count').val(numOfResults);
+        $paginationParent = $('#query-pagination .pagination-container');
+        
+        //show our container
+        $paginationParent.show();
+        
+        //Clear our container
+        $paginationParent.empty();
+        
+        //setup the vars for the first/previous page buttons
+        var first = 1; //This will always be 1
+        var previous = parseInt(currentPage) - 1;
+        //if the prveious page is less than 1, e.g. if the current page is one, then set it to 1
+        if (previous < 1) previous = 1;
+        
+        //setup the vars for the next/last page buttons
+        var last = Math.ceil(numOfResults / resultsPerPage);//This is just chopping the remainder off our quotient to get our final page
+        var next = parseInt(currentPage) + 1;
+        if(next > last) next = last;
+
+        //Now add all of our pagination buttons
+        
+        $paginationParent.append($('<button class="btn page-control" type="button" page="'+first+'" onclick="requestNewPageFromServer(this)"><span class="glyphicon glyphicon-step-backward"></button></span>'));
+        $paginationParent.append($('<button class="btn page-control" type="button" page="'+previous+'" onclick="requestNewPageFromServer(this)"><span class="glyphicon glyphicon-backward"></button></span>'));
+
+        //setup 4 previous page buttons 
+        for(i = 4; i > 0;i--){
+            pageNum = parseInt(currentPage) - i;
+            //If the page number is less than 1--make an empty div with ...'s
+            if (pageNum < 1) $paginationParent.append($('<div class="page-button-empty">. . .</div>'));
+            //else make a proper page number button with a working link etc.
+            else $paginationParent.append($('<button class="btn page-button" type="button" page="'+pageNum+'" onclick="requestNewPageFromServer(this)">'+pageNum+'</button>'));
+        }
+        
+        // Create the empty current page DIV
+        $paginationParent.append($('<div class="page-button current-page">'+currentPage+'</div>'))
+        
+         //setup 4 next page buttons 
+        for(i = 1; i < 5;i++){
+            pageNum = parseInt(currentPage) + i;
+            //If the page number is less than 1--make an empty div with ...'s
+            if (pageNum > last) $paginationParent.append($('<div class="page-button-empty">. . .</div>'));
+            //else make a proper page number button with a working link etc.
+            else $paginationParent.append($('<button class="btn page-button" type="button" page="'+pageNum+'" onclick="requestNewPageFromServer(this)">'+pageNum+'</button>'));
+        }       
+        
+        //Finally, append the last two next/last buttons
+        $paginationParent.append($('<button class="btn page-control" type="button" page="'+next+'" onclick="requestNewPageFromServer(this)"><span class="glyphicon glyphicon-forward"></button></span>'));        
+        $paginationParent.append($('<button class="btn page-control" type="button" page="'+last+'" onclick="requestNewPageFromServer(this)"><span class="glyphicon glyphicon-step-forward"></button></span>'));
+        
+        //setup our stats div
+        $paginationParent.append($('<div class="stats">'+last+' pages<br>'+numOfResults+' results</div>'))
+    }
+
+    function requestNewPageFromServer(currentButton){
+        var pageNumber = $(currentButton).attr('page');
+        var queryToResend = $('#pagination-query-json').val();
+        var numOfResults = $('#pagination-results-count').val();
+            
+        formData = [];
+        progress_uuid=gen_uuid()
+        formData.push({name: 'uuid', value: progress_uuid});
+        formData.push({name: 'currentQueryJSON', value: queryToResend});
+        formData.push({name: 'requestedPageNumber', value: pageNumber});
+        formData.push({name: 'resultsPerPage', value: '25'});
+        formData.push({name: 'numberOfResults', value: numOfResults});
+        formData.push({name: 'formtype_id', value: $('#FORMTYPE_ID').attr('title')});
+        formData.push({name: 'project_id', value: $('#PROJECT_ID').attr('title')});
+        
+        $.ajax({ 
+             url   : 'http://67.205.135.223/admin/navigate_query_pagination/',
+             type  : "POST",
+             data  : formData, // data to be submitted
+             success : function(returnedQuery)
+             {
+                console.log(returnedQuery);
+                
+                
+                var $progressBar = $('#query-progress-bar');
+                $progressBar.addClass('progress-bar-success');
+                $progressBar.removeClass('progress-bar-striped');
+                $progressBar.css('width', 100+'%');
+                $progressBar.html(100+'% -- Database Import Finished');
+                $progressBar.attr('aria-valuenow', 100); 
+                $('#view-table-body').children().first().empty();
+                //Setup our initial pagination
+                buildPageNavigationBar(returnedQuery.resultsCount, pageNumber, returnedQuery.currentQuery);
+                //Create the new table of the query results
+                rebuildQueryResultsTable(returnedQuery);
+
+             },
+                // handle a successful response
+                done : function(json) {
+                  
+                    console.log("!!!!!!!!!!!!!!!!"); // log the returned json to the console
+                    console.log("success"); // another sanity check
+                },
+
+                // handle a non-successful response
+                fail : function(xhr,errmsg,err) {
+                    $('#info-message').html("<div class='alert-box alert radius' data-alert>Oops! We have encountered an error: "+errmsg+
+                        " <a href='#' class='close'>&times;</a></div>"); // add the error to the dom
+                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                }
+        });
+        alreadyHaveStats = true;
+        
+        queryFinishedFasterThanAJAXCall = false
+        //Start our progress check
+        window.setTimeout(update_progress_info, freq);
+    }
+    
     function rebuildQueryResultsTable(results){
         //Setup the necessary DOM variables
         $queryTable = $('#view-table-body').children().first();
-        console.log($queryTable);
         //Build the header
         var $headerRow = $('<tr class="header-row"></tr>');
         $queryTable.append($headerRow);
@@ -285,7 +415,8 @@
         $headerRow.append('<td>' + results.formtype + '</td>');
         for(i = 0; i < results.rtype_header.length;i++) {
             value = results.rtype_header[i].name;
-            $headerRow.append('<td title="'+value+'"><div><span>'+value+'</span>{% if user_access >= access_level %} <button type="button" class="btn edit-column-button"><span class="glyphicon glyphicon-pencil"></span></button> {% endif %} </div></td>');    
+            if(results.rtype_header[i].rtype == 'frat')$headerRow.append('<td title="'+value+'"><div><span>'+value+'</span>{% if user_access >= access_level %} <button type="button" class="btn edit-column-button"><span class="glyphicon glyphicon-pencil"></span></button> {% endif %} </div></td>');    
+            else $headerRow.append('<td title="'+value+'"><div><span>'+value+'</span></div></td>');    
         }
         //build the individual form rows and append them to the newly cleared table
         for(row=0; row < results.form_list.length;row++){
@@ -296,12 +427,9 @@
             //Add the thumbnail link
             //First see if it's a 'NO Preview" -- if it is, then add the IMG-404 class--we don't want to show it as a big pop up
             if($currentForm.thumbnail_URI.search('no-thumb-missing.png') != -1 ){
-                console.log("sanity test");
                 $newRow.append('<td><a href="#"><img class="enki-img-popup IMG-404" src="' + $currentForm.thumbnail_URI +'"></img></a></td>');
             //Otherwise add it as normal
             }else{
-                console.log("Or not?");
-                console.log($currentForm.thumbnail_URI);
                 $newRow.append('<td><img class="enki-img-popup" src="' + $currentForm.thumbnail_URI +'" onError="this.onerror=null;this.src=\'http://67.205.135.223/static/site-images/no-thumb-missing.png\';this.classList.add(\'IMG-404\');"></img></td>');
             }       
             //Add the form id link

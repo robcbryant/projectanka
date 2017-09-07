@@ -1422,7 +1422,7 @@ class MyAdminSite(AdminSite):
                 print >>sys.stderr, "Whoops---hmmm....."
                 print >>sys.stderr, e
                 ERROR_MESSAGE += "Something happened during the check to the Progress Object--it might not have been created yet, and we are checking too quickly..."
-                     
+                return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")                  
 
         else: ERROR_MESSAGE += "Error: You do not have permission to access checking a query UUID progress object"
         
@@ -1608,6 +1608,9 @@ class MyAdminSite(AdminSite):
                             currentForm['formtypePK'] = form.form_type.pk
                             currentForm['formPK'] = form.pk
                             currentForm['label'] = form.form_name
+                            currentForm['longLabel'] = form.form_type.form_type_name + " - " + form.form_name
+                            currentForm['thumbnail'] = form.get_ref_thumbnail()
+                            currentForm['url'] = reverse('maqlu_admin:edit_form',kwargs={'project_pk': request.user.permissions.project.pk, 'form_type_pk': form.form_type.pk, 'form_pk':form.pk})
                             form_list.append(currentForm)
                         #return the finished JSON
                         jsonResponse = json.dumps(jsonResponse)
@@ -1945,6 +1948,593 @@ class MyAdminSite(AdminSite):
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")  
 
+    #=======================================================#
+    #   ACCESS LEVEL :  1       NAVIGATE_QUERY_PAGINATION()
+    #=======================================================#   
+    def navigate_query_pagination(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#
+        
+        #------------------------------------------------------------------------------------------------------------------------------------ 
+        #  This is the real magic of the database in terms of non-geospatial data. This Query engine takes complicated input from json POST data 
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            if request.method == 'POST':
+
+                #We need to make sure we have permission to deal with the formtype--e.g. it's part of the user's current project
+                formtype = FormType.objects.get(pk=request.POST['formtype_id'])
+                
+                #If the project IDs match, then we're good to go!
+                if formtype.project.pk == request.user.permissions.project.pk:
+                
+                    #Make the AJAX Request Data Model for subsequent AJAX calls
+                    progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"message":"Loading Json","current_query":"","current_term":"","percent_done":"0","is_complete":"False"}')
+                    progressData.save()
+
+                    
+                    #First let's setup our header field of ordered labels 
+                    print >>sys.stderr,  "Timer Start"                
+                    form_att_type_list = []
+                    for attType in formtype.formrecordattributetype_set.all().order_by('order_number')[:5]:
+                        form_att_type_list.append((attType.order_number,'frat',attType.pk,attType.record_type)) 
+                        #form_att_type_list.append((attType.order_number,'frat',attType))                    
+                    for refType in formtype.ref_to_parent_formtype.all().order_by('order_number')[:5]:
+                        form_att_type_list.append((refType.order_number,'frrt',refType.pk,refType.record_type)) 
+                    #sort the new combined reference ad attribute type list combined
+                    form_att_type_list = sorted(form_att_type_list, key=lambda att: att[0])
+                    #we only want the first 5 types
+                    form_att_type_list = form_att_type_list[0:5]
+                    
+                    #Finally let's organize all of our reference and attribute values to match their provided order number
+                    formList = []                
+                   
+                    #Setup our inital queryset that includes all forms
+                    masterQuery = formtype.form_set.all() 
+                    
+                    
+                    #Setup a list to hold the attribute types from the query. We want to show the record types that are part of the search terms,
+                    #   --rather than the default types that are in order. If there are less than 5 query record types, use the ordered record type list
+                    #   --until 5 are met.
+                    queryRTYPElist = []
+                    uniqueRTYPES = []
+                    rtypeCounter = 1
+                    #Load the JSON query from POST
+                    masterQueryJSON = json.loads(request.POST['currentQueryJSON'])
+                    
+                    #Update our progressbar to show we're at 10%
+                    progressData.jsonString = '{"message":"Performing Query","current_query":"","current_term":"","percent_done":"5","is_complete":"False"}'
+                    progressData.save() 
+                    
+                    #Loop through each separate query
+                    for query in sorted(masterQueryJSON['query_list']):
+                        print >>sys.stderr, query
+                        #setup a dictionary of key values of the query stats to add to the main querystas dictionary later
+                        singleQueryStats = {} 
+                        
+                        queriedForms = formtype.form_set.all()
+                        currentJSONQuery = masterQueryJSON['query_list'][query]
+                        
+                        uniqueQuery = False
+                        #Let's not allow any duplicate rtypes in the query rtype list header e.g. we don't want "Object ID" to show up 4 times 
+                        #--if the user makes a query that compares it 4 times in 4 separate queries
+                        if currentJSONQuery['RTYPE'] not in uniqueRTYPES: 
+                            uniqueRTYPES.append(currentJSONQuery['RTYPE'])
+                            uniqueQuery = True
+                        
+                        #We need to check whether or not this query is an AND/OR  or a null,e.g. the first one(so there is no and/or)
+                        rtype, rtypePK = currentJSONQuery['RTYPE'].split("-")
+                        
+                        #store our percentDone variable to update the ajax progress message object
+                        percentDone = 0
+                        
+                        #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                        # (FRAT) FormRecordAttributeType Lookups
+                        #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                        if rtype == 'FRAT':
+                            #thisRTYPE = FormRecordAttributeType.objects.get(pk=rtypePK)
+
+                            #store the record type in a new rtype list if unique
+                            if uniqueQuery: queryRTYPElist.append((rtypeCounter,'frat',rtypePK,currentJSONQuery['LABEL'])) 
+                            rtypeCounter += 1
+                            tCounter = 0;
+                            logging.info("TimerA"+ " : " + str(time.clock()))
+                            for term in currentJSONQuery['TERMS']:
+                                #Now begin modifying the SQL query which each term of each individual query
+                                #skip the term if the field was left blank
+                                if term['TVAL'] != "" or term['QCODE'] == '4':
+                                    newQuery = None
+                                    if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = queriedForms.filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = queriedForms.filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = queriedForms.filter(formrecordattributevalue__record_value__exact=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = queriedForms.exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = queriedForms.filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK)#IS_NULL        
+                                        #save stats and query
+
+                                        queriedForms = newQuery
+                                    else:#Otherwise it's an OR statement
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__exact=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK))#IS_NULL 
+                                        #save stats and query
+
+                                        queriedForms = (newQuery | queriedForms)
+                                logging.info("TimerB"+ " : " + str(time.clock()))
+                                #We'll calculate percent by claiming finishing the query is at 50% when complete and at 20% when starting this section.
+                                logging.info(rtypeCounter)
+                                logging.info(len(masterQueryJSON['query_list']))
+                                Qpercent = ((rtypeCounter-2) * (50.0/len(masterQueryJSON['query_list'])))
+                                percentDone =  5 + Qpercent +  (tCounter * (Qpercent / len(currentJSONQuery['TERMS'])) )
+                                progressData.jsonString = '{"message":"Performing Query # '+ str(rtypeCounter-1) + ' on term: '+term['TVAL']+'","current_query":"'+ currentJSONQuery['RTYPE'] + '","current_term":"'+term['TVAL']+'","percent_done":"'+ str(int(percentDone)) +'","is_complete":"False"}'
+                                progressData.save() 
+                                tCounter += 1
+                                logging.info("TimerC"+ " : " + str(time.clock()))
+                        #########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$     
+                        # (FRRT) FormRecordReferenceType Lookups            
+                        # This is where things can get complicated. I've added a 'deep' search -- or the ability to search fields from a related model
+                        # --Right now, this just looks at the form IDs of the related field and looks for matches--it will still need to do that, but
+                        # --it also needs to be able to look up FRAT or FRRTs in the same field--that will essentially double the code for this blocks
+                        # --to do all of this, and will also cause the time of the query to significantly increase because we are doing another JOIN in the
+                        # --SQL lookup to span this relationship. This won't affect the list of queried forms directly--they will be limited by what the
+                        # --query finds obviously--but the user will only see the column for the related FRRT that had a match--not specifically the field that matched
+                        # ----It WILL affect the counts for the graphs etc.
+                        #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+                        elif rtype == 'FRRT':
+                            #thisRTYPE = FormRecordReferenceType.objects.get(pk=rtypePK)
+                            #store the record type in a new rtype list if unique
+                            if uniqueQuery: queryRTYPElist.append((rtypeCounter,'frrt',rtypePK,currentJSONQuery['LABEL'])) 
+                            rtypeCounter += 1
+                            tCounter = 0;
+                            logging.info("TimerD"+ " : " + str(time.clock()))
+                            
+                            #get the deep values
+                            deepRTYPE, deepPK = currentJSONQuery['RTYPE-DEEP'].split('-')
+                            
+                            for term in currentJSONQuery['TERMS']:
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE JUST LOOKING UP THE RTYPE FORM ID
+                                #==========================================================================================================================================================================================
+                                #TODO: This also needs to check external reference values if no match is found
+                                if deepRTYPE == 'FORMID':
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__icontains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__exact=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = queriedForms.exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK) #IS_NULL        
+                                            queriedForms = newQuery
+                                        else:#Otherwise it's an OR statement
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__icontains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__exact=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK))#IS_NULL 
+                                            queriedForms = (newQuery | queriedForms)
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE LOOKING UP THE RELATIONS FRAT
+                                #==========================================================================================================================================================================================
+                                elif deepRTYPE == 'FRAT':
+                                    print >>sys.stderr, "We should be here"
+                                    #grab the formtype in question
+                                    deepFormType = FormType.objects.get(pk=FormRecordAttributeType.objects.get(pk=deepPK).form_type.pk)
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        #----------------------------------------------------------
+                                        # AND STATEMENT FOR A --TERM--
+                                        if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            #First we Get a flattened list of form pk values from the deepFormType
+                                            #Then we filter our current formtype queryset's frrt manytomany pks by the pk value list just created 
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            queriedForms = newQuery
+                                        #--------------------------------------------------------
+                                        # OR STATEMENT FOR a --TERM--
+                                        else:
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            queriedForms = (newQuery | queriedForms)                            
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE LOOKING UP THE RELATION'S FRRT(Only form ID allowed)
+                                #==========================================================================================================================================================================================
+                                elif deepRTYPE == 'FRRT':
+                                    print >>sys.stderr, "We should be here 3"
+                                    #grab the formtype in question
+                                    deepFormType = FormType.objects.get(pk=FormRecordReferenceType.objects.get(pk=deepPK).form_type_parent.pk)
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        #----------------------------------------------------------
+                                        # AND STATEMENT FOR A --TERM--
+                                        if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            #First we Get a flattened list of form pk values from the deepFormType
+                                            #Then we filter our current formtype queryset's frrt manytomany pks by the pk value list just created 
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #CONTAINS 
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXACT MATCH
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXCLUDES   
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #IS NULL  
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            queriedForms = newQuery
+                                        #--------------------------------------------------------
+                                        # OR STATEMENT FOR a --TERM--
+                                        else:
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXACT MATCH
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXCLUDES 
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #IS NULL
+                                                newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            queriedForms = (newQuery | queriedForms)            
+                                #We'll calculate percent by claiming finishing the query is at 50% when complete and at 20% when starting this section.
+                                Qpercent = ((rtypeCounter-2) * (50.0/len(masterQueryJSON['query_list'])))        
+                                percentDone =  5 + Qpercent +  (tCounter * (Qpercent / len(currentJSONQuery['TERMS'])) )
+                                progressData.jsonString = '{"message":"Performing Query # '+ str(rtypeCounter-1) + ' on term: '+term['TVAL']+'","current_query":"'+ currentJSONQuery['RTYPE'] + '","current_term":"'+term['TVAL']+'","percent_done":"'+ str(percentDone) +'","is_complete":"False"}'
+                                progressData.save() 
+                                tCounter += 1
+                        #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                        # (Form ID) Lookups
+                        #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                        elif rtype == "FORMID":
+                            tCounter = 0;
+                            logging.info("TimerD"+ " : " + str(time.clock()))
+                            for term in currentJSONQuery['TERMS']:
+                                #Now begin modifying the SQL query which each term of each individual query
+                                #skip the term if the field was left blank
+                                if term['TVAL'] != "" or term['QCODE'] == '4':
+                                    newQuery = None
+                                    print >>sys.stderr, str(formtype.form_set.all().filter(form_name__contains=term['TVAL']))
+                                    if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                        print >> sys.stderr, "Is it working?"
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = queriedForms.filter(form_name__contains=term['TVAL']) #CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = queriedForms.filter(form_name__icontains=term['TVAL']) #ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = queriedForms.filter(form_name__exact=term['TVAL'])#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = queriedForms.exclude(form_name__contains=term['TVAL'])#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = queriedForms.filter(form_name__isnull=True) #IS_NULL        
+                                        queriedForms = newQuery
+                                    else:#Otherwise it's an OR statement
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = (formtype.form_set.all().filter(form_name__contains=term['TVAL']))#CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = (formtype.form_set.all().filter(form_name__icontains=term['TVAL']))#ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(form_name__exact=term['TVAL']))#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(form_name__contains=term['TVAL']))#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(form_name__isnull=True))#IS_NULL 
+                                        queriedForms = (newQuery | queriedForms)
+                                #We'll calculate percent by claiming finishing the query is at 50% when complete and at 20% when starting this section.
+                                Qpercent = ((rtypeCounter-2) * (50.0/len(masterQueryJSON['query_list'])))        
+                                percentDone =  5 + Qpercent +  (tCounter * (Qpercent / len(currentJSONQuery['TERMS'])) )
+                                progressData.jsonString = '{"message":"Performing Query # '+ str(rtypeCounter-1) + ' on term: '+term['TVAL']+'","current_query":"'+ currentJSONQuery['RTYPE'] + '","current_term":"'+term['TVAL']+'","percent_done":"'+ str(percentDone) +'","is_complete":"False"}'
+                                progressData.save() 
+                                tCounter += 1
+                    
+                                
+                       
+                        #If this is an AND query--attach it to the masterQuery as so.
+                        if currentJSONQuery['Q-ANDOR'] == 'and': 
+                            masterQuery = (masterQuery & queriedForms)
+                        #If it's an OR query, attach it to the masterQuery as an OR statement
+                        elif currentJSONQuery['Q-ANDOR'] == 'or': 
+                            masterQuery = (masterQuery | queriedForms)
+                        #Otherwise its the first, or a single query and should simply replace the masterQuery
+                        #also set the count to this first query so we have one in case there is only one query
+                        else: 
+                            masterQuery = queriedForms;
+             
+                    #Now make sure our final queried list has distint values--merging querysets has a tendency to create duplicates
+                    masterQuery = masterQuery.distinct()
+                    
+                    #Send a message to our AJAX request object
+                    progressData.jsonString = '{"message":"Running raw SQL","current_query":"","current_term":"''","percent_done":"50","is_complete":"False"}'
+                    progressData.save()                 
+                   
+                   
+                    
+                    #Send a message to our AJAX request object
+                    progressData.jsonString = '{"message":"Loading Queried Forms & Sending generated stats now...","current_query":"","current_term":"''","percent_done":"60","is_complete":"False","stats":"none"}'
+                    progressData.save()                    
+
+                   
+
+                    #We need to check the # of rtypes in our header list now--if it's less than 5, then let's add from the ordered list
+                    #We also need to make sure we aren't adding duplicates of the RTYPES, e.g. if we're looking for a match under "Object Number" and Object Number is already
+                    #--in our sorted order-num list--let's not re-add it.
+                    for attType in form_att_type_list:
+                        print >>sys.stderr, "AttTypeList:  " + str(attType)
+                        matchfound = False;
+                        for queryAttType in queryRTYPElist:
+                            if attType[2] == queryAttType[2]:
+                                matchfound = True
+                        if matchfound == False and len(queryRTYPElist) < 5:    
+                            #let's arbitrarily add '100' to the order number so that our queries are definitely in front of these
+                            queryRTYPElist.append((attType[0] + 100,attType[1],attType[2],attType[3]))
+                            
+                    for q in queryRTYPElist:
+                        print >>sys.stderr, "QTypeList:  " + str(q)
+
+
+                    
+                    #serializeTest = serializers.serialize("json", masterQuery)         
+                    queryCounter = 0
+                    logging.info("TEST A")
+                    logging.info("TEST A END")
+                    
+                    
+                    #Setup our Pagination values given in the POST string
+                    requestedPageNumber = int(request.POST['requestedPageNumber'])
+                    resultsPerPage = int(request.POST['resultsPerPage'])
+                    #Get our queryset slice values
+                    startIndex = (resultsPerPage * requestedPageNumber) - resultsPerPage
+                    endIndex = resultsPerPage * requestedPageNumber
+                    
+                    print >>sys.stderr, startIndex;
+                    print >>sys.stderr, endIndex;
+                    #-----------------------------------------------------------------------------------------------------------
+                    # Here we need to determine whether or not the form type being queried is hierchical.
+                    #   --If it is hierachical, then we just organize the masterQuery and sort it with the hierachy in mind
+                    #   --as well as with its hierchical labels--otherwise just perform a normal sort by its label
+                    if formtype.is_hierarchical:
+                        global hierarchyFormList
+                        hierarchyFormList = []
+                        #Finally let's organize all of our reference and attribute values to match their provided order number
+                        #We want to find all the forms that have no parent element first--these are the top of the nodes
+                        #Then we'll organize the forms by hierarchy--which can then be put through the normal ordered query
+                        print >>sys.stderr, "TIMER R"+ " : " + str(time.clock())
+                        masterQuery = masterQuery.filter(hierarchy_parent=None).exclude(form_number=None, form_name=None)[startIndex:endIndex]
+                        print >>sys.stderr, "TIMER RR"+ " : " + str(time.clock())
+                        if masterQuery:
+                            total = masterQuery.count()
+                            for aForm in masterQuery: 
+                                queryCounter += 1
+                                Qpercent = ( queryCounter * (30/(total*1.0)))
+                                finalPercent = (60 + int(Qpercent))
+                                progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":"none"}'
+                                progressData.save()
+                                logging.info(aForm.form_name)
+                                hierarchyFormList.append(aForm)
+                                #Make a recursive function to search through all children
+                                def find_children(currentParentForm):          
+                                    global hierarchyFormList
+                                    for currentChild in currentParentForm.form_set.all(): 
+                                        hierarchyFormList.append(currentChild)
+                                        find_children(currentChild)
+                                find_children(aForm)
+                        #reset our masterQuery to our new hierachical list!
+                        masterQuery = hierarchyFormList
+                    else:             
+                        print >>sys.stderr, "TIMER R"+ " : " + str(time.clock())
+                        #sort the formlist by their sort_index
+                        masterQuery = masterQuery.order_by('sort_index')[startIndex:endIndex]
+                    print >>sys.stderr, "TIMER RR"+ " : " + str(time.clock())
+                    #count the query so we only make one database hit before looping(otherwise each loop would be another hit)
+                    if masterQuery:
+                        total = masterQuery.count()
+                        print >>sys.stderr, "TIMER RRR"+ " : " + str(time.clock())
+                        for aForm in masterQuery:
+                            print >>sys.stderr, "TIMER S"+ " : " + str(time.clock())
+                            queryCounter += 1
+                            Qpercent = ( queryCounter * (30/(total*1.0)))
+                            finalPercent = (60 + int(Qpercent))
+                            progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":"none"}'
+                            print >>sys.stderr, "TIMER RRRR"+ " : " + str(time.clock())
+                            progressData.save()
+                            print >>sys.stderr, "TIMER RRRRR"+ " : " + str(time.clock())
+                           # print >>sys.stderr, str(aForm.pk) + ":  <!-- Current Form Pk"
+                            rowList = []
+                            #Let's loop through each item in the queryRTYPE list and match up the frav's in each queried form so the headers match the form attribute values
+                            for rtype in queryRTYPElist:
+                                if rtype[1] == 'frat':
+                                    #print >>sys.stderr, str(rtype[2]) + '  ' + str(aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2]).count())
+                                    print >>sys.stderr, "TIMER X"+ " : " + str(time.clock())
+                                    formRVAL = aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2])
+                                    #We need to check for NULL FRAV's here. When a user manually creates new forms, they don't always have FRAVS created for them if they leave it blank
+                                    if formRVAL.exists():
+                                        rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
+                                    else:
+                                        print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
+                                    print >>sys.stderr, "TIMER Y"+ " : " + str(time.clock())
+                                else:
+                                    #for frrt in aForm.ref_to_parent_form.all():
+                                        #print >>sys.stderr, "" + str(frrt.pk)
+                                    formRVAL = aForm.ref_to_parent_form.all().filter(record_reference_type__pk=rtype[2])
+                                    if formRVAL.exists():
+                                        formRVAL = formRVAL[0]
+                                        #First check to see if there are any relations stored in the many to many relationship
+                                        #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
+                                        #   --ajax request to process properly
+                                        allReferences = formRVAL.record_reference.all()
+                                        if allReferences:
+                                            refCount = allReferences.count()
+                                            if refCount > 0:
+                                                #we need to store a list of its references--it's a manytomany relationship
+                                                #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
+                                                #-- we also need to provide the formtype pk value for the link
+                                                listOfRefs = ""
+                                                for rec in allReferences:
+                                                    listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
+                                                #remove the last delimeter
+                                                listOfRefs = listOfRefs[0:-3]
+                                                rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                                            else:
+                                                #Store the external key value instead and change it to a frrv-ext for the AJAX callable
+                                                rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                    else:
+                                        #Store the external key value instead and change it to a frrv-null for the AJAX callable
+                                        rowList.append((rtype[0],'frrv-null',"", ""))
+
+                            print >>sys.stderr, "TIMER Z"+ " : " + str(time.clock())
+                            #sort the new combined reference ad attribute type list combined
+                            rowList = sorted(rowList, key=lambda att: att[0])
+                            # print >> sys.stderr, str(rowList)
+                            #Now let's handle the thumbnail bit of business for the query
+                            #--If the current form IS a media type already, then use itself to grab the thumbnail URI
+                            if aForm.form_type.type == 1:
+                                thumbnailURI = aForm.get_thumbnail_type()
+                            else:
+                                #let's find the first media type in the order but offer a default to "NO PREVIEW" if not found
+                                thumbnailURI = staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
+                                for record in rowList:            
+                                    #if it's a reference
+                                    if record[1] == 'frrv' or record[1] == 'frrv-ext':
+                                        currentRTYPE = FormRecordReferenceValue.objects.get(pk=int(record[3]))
+                                        #if it's not a NoneType reference:
+                                        if currentRTYPE.record_reference_type.form_type_reference != None:
+                                            #If its a reference to a media type
+                                            if currentRTYPE.record_reference_type.form_type_reference.type == 1:
+                                                print >> sys.stderr, "WE GOT A MATCH"
+                                                #Because a form record reference value is a ManyToMany relationship, we just grab the first one in the list
+                                                #TODO this may need to be edited later--because you can't order the selections. I may add another ForeignKey called
+                                                #"Thumbnail Reference" which links to a single relation to a form of a media type--this would also
+                                                #probably solve the complexity of looping through to grab it as it stands right now
+                                                #****WE also have to check for NULL references
+                                                if currentRTYPE.record_reference.all().count() > 0:
+                                                    thumbnailURI = currentRTYPE.record_reference.all()[0].get_thumbnail_type()
+                                                break
+                                        
+                            #we only want the first 5 values from the final ordered list of attributes
+                            rowList = rowList[0:5]
+
+
+                            formList.append([thumbnailURI,str(aForm.pk), aForm, rowList])   
+                            print >>sys.stderr, "TIMER ZZ"+ " : " + str(time.clock())
+                    form_att_type_list, form_list = form_att_type_list, formList
+                    
+                    #update our progress bar
+                    progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"90","is_complete":"False","stats":"none"}'
+                    progressData.save() 
+                    
+                    finishedJSONquery = {}
+                    
+                    headerList=[]
+                    for rtype in queryRTYPElist:
+                        rtypeDict = {}
+                        rtypeDict["index"] = rtype[0]
+                        rtypeDict["rtype"] = rtype[1]
+                        rtypeDict["pk"] = rtype[2]
+                        rtypeDict["name"] = rtype[3]
+                        headerList.append(rtypeDict)
+
+                    #update our progress bar
+                    progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"93","is_complete":"False","stats":"none"}'
+                    progressData.save() 
+                    
+                    finishedJSONquery["rtype_header"] = headerList
+                    allFormList = []
+                    counter = 0
+                    total = len(formList)
+                    for form in formList:
+                        #update our progress bar
+                        counter += 1
+                        currentPercent = 93 + int((counter*(5.0/total)))
+                        progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"'+str(currentPercent)+'","is_complete":"False","stats":"none"}'
+                        progressData.save() 
+                        
+                        formDict = {}
+                        formDict["thumbnail_URI"] = form[0]
+                        formDict["pk"] = form[1]
+                        if formtype.is_hierarchical: formDict["form_id"] = form[2].get_hierarchy_label()
+                        else: formDict["form_id"] = form[2].form_name
+                        formRVALS = []
+                        for rval in form[3]:
+                            rvalDict = {}
+                            rvalDict["index"] = rval[0]
+                            rvalDict["rtype"] = rval[1]
+                            rvalDict["value"] = rval[2]
+                            rvalDict["pk"] = rval[3]
+                            formRVALS.append(rvalDict)
+                        formDict["rvals"] = formRVALS
+                        allFormList.append(formDict)
+
+                    
+                    finishedJSONquery["form_list"] = allFormList
+                    finishedJSONquery["formtype"] = formtype.form_type_name
+                    finishedJSONquery["formtype_pk"] = formtype.pk
+                    finishedJSONquery["project_pk"] = request.user.permissions.project.pk
+                    finishedJSONquery["project"] = request.user.permissions.project.name
+                    finishedJSONquery["pagination_page"] = requestedPageNumber
+                    finishedJSONquery["resultsCount"] = request.POST['numberOfResults'] #We use the count in post data so we don't have to RECOUNT the queryset in this function--that takes time
+                    finishedJSONquery["currentQuery"] = request.POST['currentQueryJSON']
+                    #save our stats to the returned JSON
+                    #convert to JSON
+                    finishedJSONquery = json.dumps(finishedJSONquery)
+
+                    #Update our progress bar
+                    progressData.jsonString = '{"message":"Finished!","current_query":"","current_term":"","percent_done":"100","is_complete":"True","stats":"none"}'
+                    progressData.save() 
+                    print >>sys.stderr,  "Timer End"     
+                    return HttpResponse(finishedJSONquery, content_type="application/json")
+                ERROR_MESSAGE += "Error: You don't have permission to access this FormType from another project"
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access querying this project"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")   
+    
 
     #=======================================================#
     #   ACCESS LEVEL :  1       RUN_QUERY_ENGINE()
@@ -2560,8 +3150,9 @@ class MyAdminSite(AdminSite):
                     queryCounter = 0
                     logging.info("TEST A")
                     total = queryStats['count']
+                    paginationTotal = total
                     logging.info("TEST A END")
-                    masterQuery = masterQuery
+                    
                     print >>sys.stderr, str(masterQuery)
                     
                     
@@ -2575,111 +3166,116 @@ class MyAdminSite(AdminSite):
                         #Finally let's organize all of our reference and attribute values to match their provided order number
                         #We want to find all the forms that have no parent element first--these are the top of the nodes
                         #Then we'll organize the forms by hierarchy--which can then be put through the normal ordered query
-                        for aForm in masterQuery.filter(hierarchy_parent=None).exclude(form_number=None, form_name=None)[:50]: 
+                        masterQuery =  masterQuery.filter(hierarchy_parent=None).exclude(form_number=None, form_name=None)[:25]
+                        #CACHE -- this caches the query for the loop
+                        if masterQuery:
+                            for aForm in masterQuery: 
+                                
+                                queryCounter += 1
+                                Qpercent = ( queryCounter * (30/(total*1.0)))
+                                finalPercent = (60 + int(Qpercent))
+                                progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":'+jsonStats+'}'
+                                progressData.save()
+                                logging.info(aForm.form_name)
+                                hierarchyFormList.append(aForm)
+                                #Make a recursive function to search through all children
+                                def find_children(currentParentForm):          
+                                    global hierarchyFormList
+                                    for currentChild in currentParentForm.form_set.all(): 
+                                        hierarchyFormList.append(currentChild)
+                                        find_children(currentChild)
+                                find_children(aForm)
+                        #reset our masterQuery to our new hierachical list!
+                        masterQuery = hierarchyFormList
+                    else:             
+                        #sort the formlist by their sort_index
+                        masterQuery = masterQuery.order_by('sort_index')[:25]
+                        
+                        
+                    #print >>sys.stderr, masterQuery  
+                    #CACHE -- This cache's the query before looping through it
+                    if masterQuery:
+                        for aForm in masterQuery:
                             queryCounter += 1
                             Qpercent = ( queryCounter * (30/(total*1.0)))
                             finalPercent = (60 + int(Qpercent))
                             progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":'+jsonStats+'}'
                             progressData.save()
-                            logging.info(aForm.form_name)
-                            hierarchyFormList.append(aForm)
-                            #Make a recursive function to search through all children
-                            def find_children(currentParentForm):          
-                                global hierarchyFormList
-                                for currentChild in currentParentForm.form_set.all(): 
-                                    hierarchyFormList.append(currentChild)
-                                    find_children(currentChild)
-                            find_children(aForm)
-                        #reset our masterQuery to our new hierachical list!
-                        masterQuery = hierarchyFormList
-                    else:             
-                        #sort the formlist by their sort_index
-                        masterQuery = masterQuery.order_by('sort_index')[:50]
-                        
-                        
-                    print >>sys.stderr, masterQuery  
-                    
-                    for aForm in masterQuery:
-                        queryCounter += 1
-                        Qpercent = ( queryCounter * (30/(total*1.0)))
-                        finalPercent = (60 + int(Qpercent))
-                        progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":'+jsonStats+'}'
-                        progressData.save()
-                        print >>sys.stderr, str(aForm.pk) + ":  <!-- Current Form Pk"
-                        rowList = []
-                        #Let's loop through each item in the queryRTYPE list and match up the frav's in each queried form so the headers match the form attribute values
-                        for rtype in queryRTYPElist:
-                            if rtype[1] == 'frat':
-                                print >>sys.stderr, str(rtype[2]) + '  ' + str(aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2]).count())
-                                formRVAL = aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2])
-                                #We need to check for NULL FRAV's here. When a user manually creates new forms, they don't always have FRAVS created for them if they leave it blank
-                                if formRVAL.exists():
-                                    rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
-                                else:
-                                    print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
-                            else:
-                                print >>sys.stderr, aForm.ref_to_parent_form.all().count()
-                                print >>sys.stderr, aForm.pk
-                                for frrt in aForm.ref_to_parent_form.all():
-                                    print >>sys.stderr, "" + str(frrt.pk)
-                                formRVAL = aForm.ref_to_parent_form.all().filter(record_reference_type__pk=rtype[2])
-                                if formRVAL.exists():
-                                    formRVAL = formRVAL[0]
-                                    #First check to see if there are any relations stored in the many to many relationship
-                                    #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
-                                    #   --ajax request to process properly
-                                    if formRVAL.record_reference.all().count() > 0:
-                                        #we need to store a list of its references--it's a manytomany relationship
-                                        #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
-                                        #-- we also need to provide the formtype pk value for the link
-                                        listOfRefs = ""
-                                        for rec in formRVAL.record_reference.all():
-                                            listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
-                                        #remove the last delimeter
-                                        listOfRefs = listOfRefs[0:-3]
-                                        rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                            print >>sys.stderr, str(aForm.pk) + ":  <!-- Current Form Pk"
+                            rowList = []
+                            #Let's loop through each item in the queryRTYPE list and match up the frav's in each queried form so the headers match the form attribute values
+                            for rtype in queryRTYPElist:
+                                if rtype[1] == 'frat':
+                                    print >>sys.stderr, str(rtype[2]) + '  ' + str(aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2]).count())
+                                    formRVAL = aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2])
+                                    #We need to check for NULL FRAV's here. When a user manually creates new forms, they don't always have FRAVS created for them if they leave it blank
+                                    if formRVAL.exists():
+                                        rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
                                     else:
-                                        #Store the external key value instead and change it to a frrv-ext for the AJAX callable
-                                        rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                        print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
                                 else:
-                                    #Store the external key value instead and change it to a frrv-null for the AJAX callable
-                                    rowList.append((rtype[0],'frrv-null',"", ""))
+                                    print >>sys.stderr, aForm.ref_to_parent_form.all().count()
+                                    print >>sys.stderr, aForm.pk
+                                    for frrt in aForm.ref_to_parent_form.all():
+                                        print >>sys.stderr, "" + str(frrt.pk)
+                                    formRVAL = aForm.ref_to_parent_form.all().filter(record_reference_type__pk=rtype[2])
+                                    if formRVAL.exists():
+                                        formRVAL = formRVAL[0]
+                                        #First check to see if there are any relations stored in the many to many relationship
+                                        #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
+                                        #   --ajax request to process properly
+                                        if formRVAL.record_reference.all().count() > 0:
+                                            #we need to store a list of its references--it's a manytomany relationship
+                                            #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
+                                            #-- we also need to provide the formtype pk value for the link
+                                            listOfRefs = ""
+                                            for rec in formRVAL.record_reference.all():
+                                                listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
+                                            #remove the last delimeter
+                                            listOfRefs = listOfRefs[0:-3]
+                                            rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                                        else:
+                                            #Store the external key value instead and change it to a frrv-ext for the AJAX callable
+                                            rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                    else:
+                                        #Store the external key value instead and change it to a frrv-null for the AJAX callable
+                                        rowList.append((rtype[0],'frrv-null',"", ""))
 
-                       
-                        #sort the new combined reference ad attribute type list combined
-                        rowList = sorted(rowList, key=lambda att: att[0])
-                        print >> sys.stderr, str(rowList)
-                        #Now let's handle the thumbnail bit of business for the query
-                        #--If the current form IS a media type already, then use itself to grab the thumbnail URI
-                        if aForm.form_type.type == 1:
-                            thumbnailURI = aForm.get_thumbnail_type()
-                        else:
-                            #let's find the first media type in the order but offer a default to "NO PREVIEW" if not found
-                            thumbnailURI = staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
-                            for record in rowList:            
-                                #if it's a reference
-                                if record[1] == 'frrv' or record[1] == 'frrv-ext':
-                                    currentRTYPE = FormRecordReferenceValue.objects.get(pk=int(record[3]))
-                                    #if it's not a NoneType reference:
-                                    if currentRTYPE.record_reference_type.form_type_reference != None:
-                                        #If its a reference to a media type
-                                        if currentRTYPE.record_reference_type.form_type_reference.type == 1:
-                                            print >> sys.stderr, "WE GOT A MATCH"
-                                            #Because a form record reference value is a ManyToMany relationship, we just grab the first one in the list
-                                            #TODO this may need to be edited later--because you can't order the selections. I may add another ForeignKey called
-                                            #"Thumbnail Reference" which links to a single relation to a form of a media type--this would also
-                                            #probably solve the complexity of looping through to grab it as it stands right now
-                                            #****WE also have to check for NULL references
-                                            if currentRTYPE.record_reference.all().count() > 0:
-                                                thumbnailURI = currentRTYPE.record_reference.all()[0].get_thumbnail_type()
-                                            break
-                                    
-                        #we only want the first 5 values from the final ordered list of attributes
-                        rowList = rowList[0:5]
+                           
+                            #sort the new combined reference ad attribute type list combined
+                            rowList = sorted(rowList, key=lambda att: att[0])
+                            print >> sys.stderr, str(rowList)
+                            #Now let's handle the thumbnail bit of business for the query
+                            #--If the current form IS a media type already, then use itself to grab the thumbnail URI
+                            if aForm.form_type.type == 1:
+                                thumbnailURI = aForm.get_thumbnail_type()
+                            else:
+                                #let's find the first media type in the order but offer a default to "NO PREVIEW" if not found
+                                thumbnailURI = staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
+                                for record in rowList:            
+                                    #if it's a reference
+                                    if record[1] == 'frrv' or record[1] == 'frrv-ext':
+                                        currentRTYPE = FormRecordReferenceValue.objects.get(pk=int(record[3]))
+                                        #if it's not a NoneType reference:
+                                        if currentRTYPE.record_reference_type.form_type_reference != None:
+                                            #If its a reference to a media type
+                                            if currentRTYPE.record_reference_type.form_type_reference.type == 1:
+                                                print >> sys.stderr, "WE GOT A MATCH"
+                                                #Because a form record reference value is a ManyToMany relationship, we just grab the first one in the list
+                                                #TODO this may need to be edited later--because you can't order the selections. I may add another ForeignKey called
+                                                #"Thumbnail Reference" which links to a single relation to a form of a media type--this would also
+                                                #probably solve the complexity of looping through to grab it as it stands right now
+                                                #****WE also have to check for NULL references
+                                                if currentRTYPE.record_reference.all().count() > 0:
+                                                    thumbnailURI = currentRTYPE.record_reference.all()[0].get_thumbnail_type()
+                                                break
+                                        
+                            #we only want the first 5 values from the final ordered list of attributes
+                            rowList = rowList[0:5]
 
 
-                        formList.append([thumbnailURI,str(aForm.pk), aForm, rowList])   
-                        
+                            formList.append([thumbnailURI,str(aForm.pk), aForm, rowList])   
+                            
                     form_att_type_list, form_list = form_att_type_list, formList
                     
                     #update our progress bar
@@ -2734,9 +3330,8 @@ class MyAdminSite(AdminSite):
                     finishedJSONquery["formtype_pk"] = formtype.pk
                     finishedJSONquery["project_pk"] = request.user.permissions.project.pk
                     finishedJSONquery["project"] = request.user.permissions.project.name
-                    #finishedJSONquery["serializer"] =  serializeTest
-                    #save our stats to the returned JSON
-                    #finishedJSONquery["stats"] = queryStats
+                    finishedJSONquery["currentQuery"] = request.POST['query']
+                    finishedJSONquery["totalResultCount"] = paginationTotal
                     #convert to JSON
                     finishedJSONquery = json.dumps(finishedJSONquery)
 
@@ -3459,7 +4054,7 @@ class MyAdminSite(AdminSite):
         #   --urls by 'name' in these patterns below. Thank God! There are 2 ways to handle this--through a Redirect() in a view
         #   --or through a Reverse() --both link to the same regex expression in the url patterns, but take in args/kwargs differently
         #   --This difference of arguments is what kept me frustrated for several hours--it's not well documented this small issue.
-        #   --Here are two examples to sho the differerence:
+        #   --Here are two examples to show the differerence:
         #       :redirect('maqlu_admin:project_home',project_pk=request.user.permissions.project.pk)
         #       :reverse('maqlu_admin:project_home',kwargs={'project_pk': request.user.permissions.project.pk})
         #   --Also notice that these custom AdminSite views have their own namespace attached to the custom AdminSite
@@ -3496,6 +4091,7 @@ class MyAdminSite(AdminSite):
             url(r'^get_form_search_list/$', admin.site.admin_view(self.get_form_search_list), name='get_form_search_list'),
             url(r'^bulk_edit_formtype/$', admin.site.admin_view(self.bulk_edit_formtype), name='bulk_edit_formtype'),
             url(r'^get_rtype_list/$', admin.site.admin_view(self.get_rtype_list), name='get_rtype_list'),
+            url(r'^navigate_query_pagination/$', admin.site.admin_view(self.navigate_query_pagination), name='navigate_query_pagination'),
             url(r'^check_progress/$', admin.site.admin_view(self.check_progress), name='check_progress'),
             url(r'^check_progress_query/$', admin.site.admin_view(self.check_progress_query), name='check_progress_query'),
             

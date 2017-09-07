@@ -22,9 +22,13 @@
                     <div class="btn-group btn-group-sm" role="group">
                         <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Create New Form Template" role="button" href="{% url 'maqlu_admin:new_form_type' project_pk=project.pk %}"><span class="glyphicon glyphicon-book"></span></a>
                         <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Import Form Template from CSV" role="button" href="{% url 'maqlu_admin:formtype_importer' project_pk=project.pk %}"><span class="glyphicon glyphicon-flash"></span></a>
-                    {%if formtype%}    
+                    {%if formtype%}  
+                      {% if user_access >= 4 %}  
                         <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Design Form Type Layout" role="button" href="{% url 'maqlu_admin:edit_form_type_template' project_pk=project.pk form_type_pk=formtype.pk%}"><span class="glyphicon glyphicon-th"></span></a>
-                    {%endif%}
+                      {% else %}
+                        <a class="btn btn-primary" data-toggle="tooltip" data-placement="bottom" title="Design Form Type Layout" role="button" href="# disabled"><span class="glyphicon glyphicon-th"></span></a>
+                      {%endif%} 
+                    {%endif %}
                     </div>
                     {% endif %}
                     {% if user_access >= 2 %}

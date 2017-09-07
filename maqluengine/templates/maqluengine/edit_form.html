@@ -191,7 +191,7 @@
                                                     <div class="frrv-list">
 
                                                             {% for FRRV_REF in FRRV.record_reference.all %}
-                                                                <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">{{FRRV_REF}}</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+                                                                <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><img class="enki-img-popup" src="{{FRRV_REF.get_ref_thumbnail}}"></img><div class="frrv-label"><a href="{% url 'maqlu_admin:edit_form' project_pk=project.pk form_type_pk=FRRV_REF.form_type.pk form_pk=FRRV_REF.pk %}">{{FRRV_REF.form_type}} - {{FRRV_REF}}</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
                                                                
                                                             {% endfor %}
                                                     </div>
@@ -205,7 +205,7 @@
                                         {% endfor %}
                                     {% else %}
                                             <div class="widget-FRRT frrt" id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="NEW">
-                                                <div class="btn widget-control"><span class="glyphicon glyphicon-move"></span></div>
+                                                
                                                 <div class="frrv-title">
                                                     <div>{{FRRT.record_type|trim_title}}</div>
                                                 </div>
@@ -320,11 +320,11 @@
                             for (i=0; i< returnedQuery.form_list.length; i++){
                                 var currentForm = returnedQuery.form_list[i];
                                 if (currentForm.label.length > 24){ 
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
                                 } else {
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a href="#" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.label+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\')">'+ currentForm.label +'</a></div>');                           
+                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
+                                    else        $newListItem = $('<div class="search-box-item"><a onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');                           
                                 }
                                 $newSelect.append($newListItem);
                             }
@@ -358,18 +358,20 @@
         });
         
         //Function adds a ref to the FRRT list box
-        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id){
+        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id, thumbnail, url){
             console.log(frrt_id);
             $currentWidget = $('.widget-FRRT[title="'+frrt_id+'"]')
             console.log($currentWidget[0]);
             if ($currentWidget.attr('msg') == "NEW"){
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><img class="enki-img-popup" src="'+thumbnail+'"></img><div class="frrv-label"><a href="'+url+'">'+label+'</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
             } else  {
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
+                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><img class="enki-img-popup" src="'+thumbnail+'"></img><div class="frrv-label"><a href="'+url+'">'+label+'</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
             } 
 
             $(".search-box-list").hide();          
-
+            resizeFRRVFontSize();
+            //Make sure we add the onclick functions to our new reference thumbnails
+            updateImagePopup();
         }
         
    
@@ -472,9 +474,29 @@
         
         }
         setNeededHeightOfForm(false);
-        
+        resizeFRRVFontSize();
     }
 
+    $(window).bind('resize', function() {
+        resizeFRRVFontSize();
+    }).trigger('resize');
+    
+    function resizeFRRVFontSize(){
+        $('.frrv-container').each(function(){
+            
+            console.log('SAAAAANITY TEST');
+            console.log($('.frrv-container').length);
+            console.log($(this));
+            //I made a small linear function that will handle the font size(it can be adjusted if multiple widths aren't doing it the proper justice)
+            var x = $(this).width();
+            console.log(x);
+            
+            var newSize = (0.054*x)-1
+            console.log(newSize);
+            $(this).find('.frrv-label').css('font-size', newSize);
+        });
+    }
+    
      loadTemplateJson();
     </script>
     {% endif %}
