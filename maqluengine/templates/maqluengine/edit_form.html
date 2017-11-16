@@ -19,7 +19,11 @@
             var GV_formPK = {{form.pk}};
             var GV_formtypePK = {{formtype.pk}};
             var GV_projectPK = {{project.pk}};
+            
+            var RTYPE_LIST;
+            var TEMPLATE_RTYPE_LIST;
         </script>
+               
     </div><!-- project header -->
     
     
@@ -33,6 +37,7 @@
         <div id="center-pane" class="col-md-10">
  
             <form id="form-nav-search-form" method="post" autocomplete="off">
+
                 {% if user_access >= access_level %}{% csrf_token %}{% endif %}
                 <div id="nav-container">
                     <div class="spacer"></div>
@@ -40,8 +45,8 @@
                     
                         <div class="span-container"><a id="previous-form-link"><span class="glyphicon glyphicon-backward"></span></a></div>
                         <div class="search-field">
-                            <input type='text' id="form-nav-search" placeholder="{{form}}" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>
                             <div id="search-box-list" style="display:none;"></div>
+                            <input type='text' id="form-nav-search" placeholder="{{form}}" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>     
                         </div>
                         <div class="span-container"><a id="next-form-link"><span class="glyphicon glyphicon-forward"></span></a></div>
                     </div>
@@ -98,7 +103,7 @@
                             <!-- FormType Name Entry for Editing-->
                             <div id="form-properties" class="col-md-6">
                                 <div id="form-info" class="panel">
-                                    <div class="panel-heading">{{ formtype.form_type_name }} Properties</div>
+                                    <div class="panel-heading">{{form.form_name}} {{ formtype.form_type_name }} Properties</div>
                                     <div class="panel-body">
                                         <div class="input-group">
                                             {% if formtype.type == 0 %}
@@ -151,76 +156,10 @@
                     <!-- All Attributes -->           
                     <div id="form-all-fields-grid" class=""> 
                         <div class="layout-container">
+
                         
                             <div class="loader" hidden></div>
-                                {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
-                                    <div class="attribute-float frat" id="{{formrecordattributetype.pk}}">
-                                        
-                                        <ul class="list-group" title="{{formrecordattributetype}}">
-                                            <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
-                                            {#Make sure our counter class is reset#} 
-                                            {{counter.set_false}}
-                                            {% for formrecordattributevalue in form.formrecordattributevalue_set.all %}
-                                                {% if formrecordattributevalue.record_attribute_type == formrecordattributetype %}
-                                                    <li class="list-group-item input-field">
-                                                        <textarea name="{{formrecordattributevalue|post_model_type}}{{formrecordattributevalue.pk}}">{{formrecordattributevalue}}</textarea>
-                                                   </li>
-                                                    {{ counter.set_true }}
-                                                {% elif forloop.last and counter.count != 1 %}
-                                                    <li class="list-group-item input-field">
-                                                        <textarea name="frav__{{formrecordattributetype.pk}}__new"></textarea>
-                                                    </li>
-                                                    {{counter.set_false}}
-                                                {% endif %}
-                                            {% endfor %}                                   
-                                        </ul>
-                                    </div>
-                                {% endfor %}        
-                                 
-
-
-                                
-                                {% for FRRT in formtype.ref_to_parent_formtype.all %}  
-                                    {% if form.ref_to_parent_form.all %} 
-                                        {% for FRRV in form.ref_to_parent_form.all %}
-                                            {% if FRRV.record_reference_type.pk == FRRT.pk %}                        
-                                                <div class="widget-FRRT frrt" id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="{{FRRV.pk}}">
-                                                    <div class="frrv-title">
-                                                        <div>{{FRRT.record_type|trim_title}}</div>
-                                                    </div>
-                                                    <div class="frrv-list">
-
-                                                            {% for FRRV_REF in FRRV.record_reference.all %}
-                                                                <div class="frrv-container"><input name="frrv__{{FRRV.pk}}" value="{{FRRV_REF.pk}}" hidden></input><img class="enki-img-popup" src="{{FRRV_REF.get_ref_thumbnail}}"></img><div class="frrv-label"><a href="{% url 'maqlu_admin:edit_form' project_pk=project.pk form_type_pk=FRRV_REF.form_type.pk form_pk=FRRV_REF.pk %}">{{FRRV_REF.form_type}} - {{FRRV_REF}}</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
-                                                               
-                                                            {% endfor %}
-                                                    </div>
-                                                    <div class="frrv-search">
-                                                        <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrv__{{FRRV.pk}}__ext" value="{{FRRV.external_key_reference}}"></input></div>
-                                                        <div><span class="glyphicon glyphicon-search"></span><input type="text"  oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
-                                                    </div>
-                                                </div>
-
-                                            {% endif %}
-                                        {% endfor %}
-                                    {% else %}
-                                            <div class="widget-FRRT frrt" id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="NEW">
-                                                
-                                                <div class="frrv-title">
-                                                    <div>{{FRRT.record_type|trim_title}}</div>
-                                                </div>
-                                                <div class="frrv-list">
-
-                                                </div>
-                                                <div class="frrv-search">
-                                                    <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
-                                                    <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
-                                                </div>
-                                            </div>
-                                            
-                                    {% endif %}
-                                {% endfor %}
-                                
+                             
                                 
                                 
                         </div>
@@ -231,25 +170,176 @@
         </div>
     </div>
     
+    <!---------------------------------------------------------------------------------------------------------------------------------------------------------->    
+    <!-- ALL WIDGET TEMPLATES CONTAINER (for cloning) ---------------------------------------------------------------------------------------------------------->
+    <!---------------------------------------------------------------------------------------------------------------------------------------------------------->
+    <div id="widget-templates" style="display:none">
+                <!-- LABEL WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-label" type="label"><div class="widget-label-value LABEL">Label</div></div>
+                
+                <!-- DROPDOWN SELECT WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-dropdown-view widget-FRRT widget frrt" id="" type="dropdown-view" msg="NEW">
+                    <div class="dropdown-title LABEL">Label Here</div>
+                    <div class="ext-key" hidden><input hidden></input></div>
+                    <select name=""><option value="" selected="">None</option></select>
+                </div>                
+                
+                <!-- THUMB LIST WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-thumb-view widget-FRRT widget frrt" id="" type="frrt" msg="NEW">
+                    
+                    <div class="frrv-title">
+                        <div class="LABEL"></div>
+                    </div>
+                    <div class="frrv-list">          
+                        
+                        
+                    </div>
+                    <div class="frrv-search">
+                        <div class="ext-key"><span class="glyphicon glyphicon-barcode"></span><input type="text"></input></div>
+                        <div class="search-box"><span class="glyphicon glyphicon-search"></span><input type="text"></input><div class="search-box-list" hidden></div></div>
+                    </div>
 
+                </div>
+                
+                <!-- IMAGE VIEW WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-image-view widget-FRRT frrt" msg="NEW">
+                    <div class="frrv-title">
+                        <div class="LABEL"></div>
+                    </div>
+                    <div class="widget-image-view-nav-arrows">
+                        <button class="nav-left" type="button"><span class="glyphicon glyphicon-chevron-left"></span></button>
+                        <button class="nav-right" type="button"><span class="glyphicon glyphicon-chevron-right"></span></button>
+                    </div>
+                    <div class="frrv-list">
+                       
+                    </div>
+                    <div class="frrv-search">
+                        <div class="ext-key"><span class="glyphicon glyphicon-barcode"></span><input type="text"></input></div>
+                        <div class="search-box"><span class="glyphicon glyphicon-search"></span><input type="text"></input><div class="search-box-list" hidden></div></div>
+                        
+                    </div>                  
+                </div>        
+                
+                <!-- FRAT WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-frat attribute-float widget frat" id="" type="frat" msg="NEW">
+                    <ul class="list-group" title="">
+                        <li class="list-group-item input-label"><strong class="LABEL"></strong></li>
+                        <li class="list-group-item input-field">
+                            <textarea style="resize:none;"></textarea>
+                        </li>
+                    </ul>
+                </div>
+                
+                <!-- Other Widget related templates, e.g. a list item template -->
+                
+                    <!-- Thumb List Item Template -->
+                    <div class="frrv-container thumb-view-item"><input name="" value="" hidden></input><img class="enki-img-popup" src=""><div class="frrv-label" style=""><a href="#">Example Item 1</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+                    <!-- Image View Item Template -->
+                    <div class="frrv-container image-view-item"><input name="" value="" hidden></input><div class="frrv-label"><a href="">Label</a></div><img class="enki-img-popup" src=""></img><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+    </div>
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->    
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->   
+    
+    
 {% endblock %}
 
 
     {% block footer %}
     {% if formtype.media_type != 3 %}
+
+    
+     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>
         <script src="{% static 'js/enki_geoeditor_single_entity.js'  %}"></script>   
         <script src="{% static 'js/enki-iframe-url-tester.js'  %}"></script> 
         <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script> 
-        <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>              
+
+       
     {%endif%}        
     {% if user_access >= access_level %}
     <script>
+    
+    //***********************************************************************************************************************************************************************
+///////////////////////////////////////////////////////////////////////////////////////////////
+//  CODE FOR CSRF Protection Header
+//  Courtesty of: https://github.com/realpython/django-form-fun/blob/master/part1/main.js
+///////////////////////////////////////////////////////////////////////////////////////////////
+$(function() {
+
+
+    // This function gets cookie with a given name
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie != '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = jQuery.trim(cookies[i]);
+                // Does this cookie string begin with the name we want?
+                if (cookie.substring(0, name.length + 1) == (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+    var csrftoken = getCookie('csrftoken');
+    //console.log(csrftoken);
+    /*
+    The functions below will create a header with csrftoken
+    */
+
+    function csrfSafeMethod(method) {
+        // these HTTP methods do not require CSRF protection
+        return (/^(GET|HEAD|OPTIONS|TRACE)$/.test(method));
+    }
+    function sameOrigin(url) {
+        // test that a given url is a same-origin URL
+        // url could be relative or scheme relative or absolute
+        var host = document.location.host; // host + port
+        var protocol = document.location.protocol;
+        var sr_origin = '//' + host;
+        var origin = protocol + sr_origin;
+        // Allow absolute or scheme relative URLs to same origin
+        return (url == origin || url.slice(0, origin.length + 1) == origin + '/') ||
+            (url == sr_origin || url.slice(0, sr_origin.length + 1) == sr_origin + '/') ||
+            // or any other URL that isn't scheme relative or absolute i.e relative.
+            !(/^(\/\/|http:|https:).*/.test(url));
+    }
+
+    $.ajaxSetup({
+        beforeSend: function(xhr, settings) {
+            if (!csrfSafeMethod(settings.type) && sameOrigin(settings.url)) {
+                // Send the token to same-origin, relative URLs only.
+                // Send the token only if the method warrants CSRF protection
+                // Using the CSRFToken value acquired earlier
+                xhr.setRequestHeader("X-CSRFToken", csrftoken);
+                console.log(xhr);
+            }
+        }
+    });
+
+});
+        function getAPIEndpoints(){
+            return JSON.parse('{{api_urls|safe}}');
+        }
+        //GLOBALS//
+        var RTYPE_LIST;
+        var CURRENT_TEMPLATE = '{{formtype.template_json|escapejs}}';
+        var CURRENT_FORM_PK = '{{form.pk}}';
+        var CURRENT_FORMTYPE_PK = '{{formtype.pk}}'; 
+        var CURRENT_PROJECT_PK = '{{project.pk}}';
+        var INITIALIZATION_CODE = 2;
+        var API_URLS = getAPIEndpoints();
+        var DEFAULT_GEOJSON = '{{project.geojson_string}}';
+        
         $('#edit_form').submit(function(e){
              e.preventDefault();
             var formData = $("#edit_form").serializeArray();
             formData.push({name: 'project_id', value: {{project.pk}} });
             formData.push({name: 'formtype_id', value: {{formtype.pk}} });
             formData.push({name: 'form_id', value: {{form.pk}} });
+            console.log(formData);
             $.ajax({ 
                  url   : 'http://67.205.135.223/admin/save_form_changes/',
                  type  : "POST",
@@ -257,7 +347,8 @@
                  success : function(returnedQuery)
                  {
                     console.log(returnedQuery);
-                    
+                    try{alert(returnedQuery.MESSAGE);}
+                    catch(e){alert(returnedQuery.ERROR);}
                  },
                 // handle a non-successful response
                 fail : function(xhr,errmsg,err) {
@@ -268,236 +359,28 @@
         }); 
         
         $('#toolbar-delete').click( function(){
-        formData = {'ID':'{{form.pk}}'}
-            $.ajax({ 
-                 url   : 'http://67.205.135.223/admin/delete_form/',
-                 type  : "POST",
-                 data  : formData, // data to be submitted
-                 success : function(returnedQuery)
-                 {
-                    console.log(returnedQuery);
-                    window.location.replace($('#next-form-link').attr('href'));
-                    
-                 },
-                // handle a non-successful response
-                fail : function(xhr,errmsg,err) {
-                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
-                }
-            });        
-        
-        }); 
-        
-        
-        //Function to remove the current reference from the form's FRRT widget-FRRT
-        function removeReferenceFromFRRV(currentRef){
-            $(currentRef).parent().remove();
-            //$(currentRef).parent().find('input').attr('name', $(currentRef).parent().find('input').attr('name') += 'DELETE');
-        }
-        
-        
-        //Function that searches for the given list of forms based upon its formtype
-        
-        function lookForReferenceForms(searchbox, projectID, formtypeID, parentFormTypeID){
-            //First get all the associated data we'll need to send to the server
-            var searchString = $(searchbox).val();
-            var jsonData = {"projectID" : projectID, "formtypeID" : formtypeID, "query" : searchString};
-            console.log (jsonData);
-            //Send and AJAX Request
-            $.ajax({ 
-                     url   : "http://67.205.135.223/admin/get_form_search_list/",
+            if(confirm("Are you sure you want to delete this Form?")){
+                formData = {'ID':'{{form.pk}}'}
+                $.ajax({ 
+                     url   : API_URLS['recycle_form'],
                      type  : "POST",
-                     data  : jsonData, // data to be submitted
+                     data  : formData, // data to be submitted
                      success : function(returnedQuery)
                      {
-                        //$("#search-box-list").show();
-                        console.log(returnedQuery.form_list);
-                        //Create a dropdown of no more than 5 items
-                        $newSelect = $(searchbox).parent().find('.search-box-list');
-                        $newSelect.empty();
-                        $newSelect.hide();
-                        //Only do something if "form_list" is in the json data
-                        if(returnedQuery['form_list'] != null){
-                            for (i=0; i< returnedQuery.form_list.length; i++){
-                                var currentForm = returnedQuery.form_list[i];
-                                if (currentForm.label.length > 24){ 
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
-                                } else {
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a onclick="addNewFRRVrefToFRRT(this, \''+currentForm.longLabel+'\', \''+currentForm.formPK+'\', \''+parentFormTypeID+'\', \''+currentForm.thumbnail+'\', \''+currentForm.url+'\')">'+ currentForm.label +'</a></div>');                           
-                                }
-                                $newSelect.append($newListItem);
-                            }
-                            //For another robust solution--let's modify the text size to be smaller if it's longer than 30 characterSet
-                            $newSelect.children().each( function() {
-                               if ($(this).children().first().text().length > 30) $(this).children().first().addClass('form-nav-search-sml-txt'); 
-                            });
-                            $newSelect.show();
-                        }2
-                     },
+                        console.log(returnedQuery);
+                        window.location.replace($('#next-form-link').attr('href'));
 
+                     },
                     // handle a non-successful response
                     fail : function(xhr,errmsg,err) {
                         console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
                     }
-                });    
-            
-        }
-        //This makes the search box disappear when clicking off the box
-        $(document).mouseup(function(e) 
-{
-            var container = $(".search-box-list");
-
-            // if the target of the click isn't the container nor a descendant of the container
-            if (!container.is(e.target) && container.has(e.target).length === 0) 
-            {
-                container.hide();
+                });        
             }
-    
-    
-        });
+        }); 
         
-        //Function adds a ref to the FRRT list box
-        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id, thumbnail, url){
-            console.log(frrt_id);
-            $currentWidget = $('.widget-FRRT[title="'+frrt_id+'"]')
-            console.log($currentWidget[0]);
-            if ($currentWidget.attr('msg') == "NEW"){
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><img class="enki-img-popup" src="'+thumbnail+'"></img><div class="frrv-label"><a href="'+url+'">'+label+'</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
-            } else  {
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><img class="enki-img-popup" src="'+thumbnail+'"></img><div class="frrv-label"><a href="'+url+'">'+label+'</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
-            } 
 
-            $(".search-box-list").hide();          
-            resizeFRRVFontSize();
-            //Make sure we add the onclick functions to our new reference thumbnails
-            updateImagePopup();
-        }
-        
-   
-    function setNeededHeightOfForm(){
-        var largestY = 0;
-        $('.layout-container').children().each( function(){
-            var thisY = $(this).outerHeight() + $(this).position().top;
-            console.log(thisY);
-            if (largestY < thisY) largestY = thisY;
-        });
-        
-        console.log("settomg height: " + largestY);
-        $('.layout-container').css('height', largestY+"px");
-    }
-    
-    function loadTemplateJson(reset){
-        //This function loads the json template string provided by the formtype
-        //  --This string can contain several templates, but will always have a 'default' template that is initially loaded.
-        //  --This allows the admin to create different templates for different purposes--e.g. one template might be better for
-        //  ----data-entry while another might make more sense for just viewing the individual forms. All template will be provided
-        //  ----to each form django view, but will default to the default template unless the user has a stored preference
-        //
-        //The json has the following format:
-        //  -- {[
-        //          {"default":[
-        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
-        //                      "width":"20%",   -- The width in percentage of the widget
-        //                      "height":"20px", -- The height in pixels of the widget
-        //                      "top":"20px",    -- The top value in pixels of the widget
-        //                      "left":"20%"     -- The left value in percentage of the widget
-        //                    },
-        //                     ]
-        //          },
-        //          {"new_template":[ {....      --This is any other templates that may have been created
-        //                            ....
-        //                     } ]
-        //          },
-        //     ]}
-       
-        var currentTemplate = '{{formtype.template_json|safe}}';
-        console.log(currentTemplate);
-        //If not a new template
-       if(currentTemplate != "" && !reset && currentTemplate != "None"){
-            var template = JSON.parse(currentTemplate);
-            console.log('sanity test');
-            var widgets = template['default'];
-            
-            //loop through each 
-            for (var i = 0; i < widgets.length; i++){
-                var widget = widgets[i];
-                $currentWidget = $('#'+widget.id);
-                console.log($currentWidget);
-                $currentWidget.css('position', 'absolute');
-                if ($currentWidget.hasClass('frat')){
-                    console.log("What's happening?!?!?!");
-                    $currentWidget.css('left', widget.left);
-                    $currentWidget.css('top', widget.top);
-                    $currentWidget.css('min-width', '15%');
-                    $currentWidget.css('width', widget.width);
-                    $currentWidget.css('height', widget.height);
-                    $currentWidget.find('textarea').css('width', '100%');
-                    console.log($currentWidget.outerHeight()-25);
-                    $currentWidget.find('textarea').css('height',  $currentWidget.outerHeight()-25);
-
-                } else {
-                    $currentWidget.css('left', widget.left);
-                    $currentWidget.css('top', widget.top);
-                    $currentWidget.css('width', widget.width);
-                    $currentWidget.css('height', widget.height);
-
-                }
-            }
-            
-        } else {
-            var left = 0;
-            var top = 0;
-            console.log('sanity test2');
-            $('.widget').each( function(){
-                console.log($(this));
-                $(this).css('position', 'absolute');
-                if ($(this).hasClass('frat')){
-                    $(this).css('left', left+'%');
-                    $(this).css('top', top+'px');
-                    $(this).css('min-width', '15%');
-                    $(this).css('width', '20%');
-                    $(this).css('height','50px');
-                    $(this).find('textarea').css('width', '100%');
-                    $(this).find('textarea').css('height', '25px');
-                    if(left == 75) {left = 0; top+=75;}
-                    else {left += 25;}
-                } else {
-                    $(this).css('left', left+'%');
-                    $(this).css('top', top+'px');
-                    $(this).css('width', '25%');
-                    $(this).css('height', '150px');
-                    if(left == 75){ left = 0; top+=150;}
-                    else {left += 25;}
-                } 
-            });        
-        
-        }
-        setNeededHeightOfForm(false);
-        resizeFRRVFontSize();
-    }
-
-    $(window).bind('resize', function() {
-        resizeFRRVFontSize();
-    }).trigger('resize');
-    
-    function resizeFRRVFontSize(){
-        $('.frrv-container').each(function(){
-            
-            console.log('SAAAAANITY TEST');
-            console.log($('.frrv-container').length);
-            console.log($(this));
-            //I made a small linear function that will handle the font size(it can be adjusted if multiple widths aren't doing it the proper justice)
-            var x = $(this).width();
-            console.log(x);
-            
-            var newSize = (0.054*x)-1
-            console.log(newSize);
-            $(this).find('.frrv-label').css('font-size', newSize);
-        });
-    }
-    
-     loadTemplateJson();
     </script>
+            <script src="{% static 'js/enki_template_engine.js'  %}"></script>   
     {% endif %}
     {% endblock %}

@@ -100,6 +100,7 @@
                                     <option value=".gif" {% if formtype.file_extension == '.gif' %}selected{%endif%}>.gif</option>
                                     <option value=".png" {% if formtype.file_extension == '.png' %}selected{%endif%}>.png</option>
                                     <option value=".bmp" {% if formtype.file_extension == '.bmp' %}selected{%endif%}>.bmp</option>
+                                    <option value="" {% if formtype.file_extension == '' %}selected{%endif%}>None</option>
                                 </select>
                             </div>
                             <div class="input-group" style="float:left;">                    
@@ -143,6 +144,7 @@
                                </div>
                             </div>
                         {% for formrecordattributetype in formtype.formrecordattributetype_set.all|dictsort:"order_number"  %}
+                            {% if formrecordattributetype.flagged_for_deletion == False%}
                             <div class="attribute-float">
                                 <div class="input-group attribute-input">
                                     <span class="input-group-btn">
@@ -172,6 +174,7 @@
                                     <input class="switch-id-checkbox" type="checkbox" name="frat__{{formrecordattributetype.pk}}__switch-id">
                                 </div>
                             </div>
+                            {%endif%}
                         {% endfor %}
                 </div>
                 <div class="add-field-button">
@@ -192,9 +195,9 @@
                             <div class="reference-input"><select name="forcloning">
                                     <option value="-1" selected>None Selected</option>
                                 {% for thisformtype in project.formtype_set.all %}
-                                    
+                                    {% if thisformtype.flagged_for_deletion == False %}
                                     <option value="{{thisformtype.pk}}">{{thisformtype}}</option>
-                                    
+                                    {%endif %}
                                 {% endfor %}
                             </select></div>
                             <div class="order-field"><span class="glyphicon glyphicon-sort-by-order" title="Order of Priority"></span><input type="text" class="order-num-field" maxlength="3" name="forcloning" value=""> </div>
@@ -204,9 +207,9 @@
                                 <select class="offline" name="frrt____new-ref-id" hidden disabled>
                                     <option value="-1">None Selected</option>
                                 {% for thisformtype in project.formtype_set.all %}
-                                    
+                                    {% if thisformtype.flagged_for_deletion == False %}
                                     <option value="{{thisformtype.pk}}">{{thisformtype}}</option>
-                                    
+                                    {%endif %}
                                 {% endfor %}
                                 </select>
                             </div>
@@ -214,6 +217,7 @@
                     {# This is where we build reference record type input rows if any exists for the formtype already #}
                         {% for formrecordreferencetype in formtype.ref_to_parent_formtype.all %}
                             {% if formrecordreferencetype.form_type_reference.type == 0 or formrecordreferencetype.form_type_reference == None%}
+                            {% if formrecordreferencetype.flagged_for_deletion == False %}
                             {{counter.set_false}}
                             <div class="row">
                                 <div class=""><a class="btn del-reference-button" href="#"><span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span></a></div>
@@ -221,10 +225,10 @@
                                 <span class="" hidden disabled></span>
                                 <div class="reference-input" hidden disabled><select name="{{formrecordreferencetype|post_model_type}}{{formrecordreferencetype.pk}}__ref">
                                     {% for thisformtype in project.formtype_set.all %}
-                                        
+                                        {% if thisformtype.flagged_for_deletion == False %}
                                         <!--{{formrecordreferencetype.form_type_reference}} == {{thisformtype}} -->
                                         <option value="{{thisformtype.pk}}" {% if formrecordreferencetype.form_type_reference == thisformtype %}  {{counter.set_true}}selected{% endif %}>{{thisformtype}}</option>
-                                        
+                                        {%endif %}
                                     {% endfor %}
                                         <!-- {{counter.count}} -->
                                         {% if counter.count == 0 %}<option value="-1" selected>None Selected</option>{%else%}<option value="-1">None Selected</option>{%endif%}
@@ -236,10 +240,10 @@
                                     <input class="reference-conversion" type="checkbox" name="frrt__{{formrecordreferencetype.pk}}__is-new-ref">
                                     <select class="offline" name="frrt__{{formrecordreferencetype.pk}}__new-ref-id" disabled>
                                     {% for thisformtype in project.formtype_set.all %}
-                                        
+                                        {% if thisformtype.flagged_for_deletion == False %}
                                         <!-- {{formrecordreferencetype}} ?? {{formrecordreferencetype.form_type_reference}}  =   {{thisformtype}} -->
                                         <option value="{{thisformtype.pk}}"  {% if formrecordreferencetype.form_type_reference == thisformtype %}  {{counter.set_true}}selected{% endif %}>{{thisformtype}}</option>
-                                        
+                                        {%endif %}
                                     {% endfor %}
                                         {% if counter.count == 0 %}<option value="-1" selected>None Selected</option>{%else%}<option value="-1">None Selected</option>{%endif%}
                                         {{counter.set_false}}
@@ -250,6 +254,7 @@
                                     <input class="attribute-conversion" type="checkbox" name="frrt__{{formrecordreferencetype.pk}}__is-new-att">
                                 </div>               
                             </div> 
+                            {%endif%}
                            {%  endif %}
                         {% endfor %}
                     
@@ -270,9 +275,9 @@
                             <div class="reference-input"><select name="forcloning">
                                     <option value="-1"  selected>Other</option>
                                 {% for thisformtype in project.formtype_set.all %}
-                                    
+                                    {% if thisformtype.flagged_for_deletion == False %}
                                     <option value="{{thisformtype.pk}}">{{thisformtype}}</option>
-                                    
+                                    {%endif %}
                                 {% endfor %}
                             </select></div>
                             <div class="order-field"><span class="glyphicon glyphicon-sort-by-order" title="Order of Priority"></span><input type="text" class="order-num-field" maxlength="3" name="forcloning" value=""> </div>
@@ -282,25 +287,26 @@
                                 <select class="offline" name="frrt__{{formrecordreferencetype.pk}}__new-ref-id" disabled>
                                     <option value="-1" selected>Other</option>
                                 {% for thisformtype in project.formtype_set.all %}
-                                   
+                                   {% if thisformtype.flagged_for_deletion == False %}
                                     <option value="{{thisformtype.pk}}">{{thisformtype}}</option>
-                                   
+                                   {% endif %}
                                 {% endfor %}
                                 </select>
                             </div>
                         </div> 
                     {# This is where we build reference record type input rows if any exists for the formtype already #}
                         {% for formrecordreferencetype in formtype.ref_to_parent_formtype.all %}
-                            {% if formrecordreferencetype.form_type_reference.type == 1%}
+                            {% if formrecordreferencetype.form_type_reference.type == 1 and formrecordreferencetype.flagged_for_deletion == False%}
+                            
                             <div class="row">
                                 <div class=""><a class="btn del-reference-button" href="#"><span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span></a></div>
                                 <div class="reference-input"><input type="text" name="{{formrecordreferencetype|post_model_type}}{{formrecordreferencetype.pk}}" value="{{formrecordreferencetype}}"></div>                            
                                 <span class="" hidden disabled></span>
                                 <div class="reference-input" hidden disabled><select name="{{formrecordreferencetype|post_model_type}}{{formrecordreferencetype.pk}}__ref">   
                                     {% for thisformtype in project.formtype_set.all %}
-                                        
+                                        {% if thisformtype.flagged_for_deletion == False %}
                                         <option value="{{thisformtype.pk}}" {% if formrecordreferencetype.form_type_reference == thisformtype %} {{counter.set_true}}selected{% endif %}>{{thisformtype}}</option>
-                                    
+                                         {% endif %}
                                     {% endfor %}
                                         {% if counter.count == 0 %}<option value="-1" selected>None Selected</option>{%else%}<option value="-1">None Selected</option>{%endif%}
                                         {{counter.set_false}}
@@ -311,9 +317,9 @@
                                     <input class="reference-conversion" type="checkbox" name="frrt__{{formrecordreferencetype.pk}}__is-new-ref">
                                     <select class="offline" name="frrt__{{formrecordreferencetype.pk}}__new-ref-id" disabled>
                                     {% for thisformtype in project.formtype_set.all %}
-                                     
+                                     {% if thisformtype.flagged_for_deletion == False %}
                                         <option value="{{thisformtype.pk}}"  {% if formrecordreferencetype.form_type_reference == thisformtype %} {{counter.set_true}}selected{% endif %}>{{thisformtype}}</option>
-                               
+                                      {%endif %}
                                     {% endfor %}
                                         {% if counter.count == 0 %}<option value="-1" selected>None Selected</option>{%else%}<option value="-1">None Selected</option>{%endif%}
                                         {{counter.set_false}}
@@ -349,22 +355,25 @@
 <script>
         $('#toolbar-delete').click( function(){
         formData = {'ID':'{{formtype.pk}}'}
-            $.ajax({ 
-                 url   : 'http://67.205.135.223/admin/delete_form_type/',
-                 type  : "POST",
-                 data  : formData, // data to be submitted
-                 success : function(returnedQuery)
-                 {
-                    console.log(returnedQuery);
-                    window.location.replace('{% url 'maqlu_admin:project_home' project_pk=project.pk %}');
-                    
-                 },
-                // handle a non-successful response
-                fail : function(xhr,errmsg,err) {
-                    console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
-                }
-            });        
+            if(confirm("Are you sure you want to delete this Form Type?")){
+                $.ajax({ 
+                     url   : 'http://67.205.135.223/admin/recycle_form_type/',
+                     type  : "POST",
+                     data  : formData, // data to be submitted
+                     success : function(returnedQuery)
+                     {
+                        console.log(returnedQuery);
+                        window.location.replace('{% url 'maqlu_admin:project_home' project_pk=project.pk %}');
+                        
+                     },
+                    // handle a non-successful response
+                    fail : function(xhr,errmsg,err) {
+                        console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
+                    }
+                }); 
+            }                
         
         }); 
+        
     </script>    
     {% endblock %}

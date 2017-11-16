@@ -1,0 +1,1010 @@
+
+{% extends "admin/base.html" %}
+{% load staticfiles %}
+
+{% load enki_tags %}
+{% block title %}Maqlu Engine&nbsp;&nbsp;-&nbsp;&nbsp;{{project}}&nbsp;&nbsp;:&nbsp;&nbsp;{{formtype}}&nbsp;&nbsp;:&nbsp;&nbsp;{{form}}{% endblock %}
+
+
+{% block branding %}<a href="{% url 'admin:index' %}"><span class="glyphicon glyphicon-certificate"></span>M<small>aqlu</small> D<small>atabase</small> E<small>ngine</small></a>{% endblock %}
+
+{% block breadcrumbs %}
+    {% include "maqluengine/admin_header.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}
+{% endblock %}
+
+{% block content %} 
+    
+    <div id="project-header" class="container-fluid">
+        <script>
+            var GV_projectPK = {{project.pk}};
+            
+            var RTYPE_LIST;
+            var TEMPLATE_RTYPE_LIST;
+        </script>
+               
+    </div><!-- project header -->
+    
+    
+    <div id="project-content" class="container-fluid">
+    
+        <!-- This panel is the side column for listing available form types -->
+        <div id="left-pane" class="col-md-2">
+            {% include "maqluengine/admin_side_bar.html" with deletable=deletable toolbar_title_code=toolbar_title_code project=project formtype=formtype form=form %}                              
+        </div>
+         
+        <div id="center-pane" class="col-md-10">
+             <!-- I believe I still need this form for the csrf token supplied by Django--will have to research later to see if that's the case-->
+             <form id="geospatial-engine-form" method="post">
+             {% if user_access >= access_level %}{% csrf_token %}{% endif %}
+             </form>
+                
+            <div id="geospatial-engine" class="">
+                <!-- TOOL BAR HEADER #####################################################################################################################-->
+                <div class="toolbar-header">
+                    <div class="toolbar-A">
+                    </div>
+                    
+                    <div class="toolbar-B">
+                    <button type="button" class="btn tool-measure"><span class="glyphicon glyphicon-minus"></span></button>
+                    <button type="button" id="toolbutton_draw"class="btn tool-draw"><span class="glyphicon glyphicon-pencil"></span></button>
+                    <button type="button" class="btn tool-zoomin"><span class="glyphicon glyphicon-zoom-in"></span></button>
+                    <button type="button" class="btn tool-zoomout"><span class="glyphicon glyphicon-zoom-out"></span></button>
+                    <button type="button" class="btn tool-zoomextent"><span class="glyphicon glyphicon-fullscreen"></span></button>
+                    <button type="button" class="btn tool-select"><span class="glyphicon glyphicon-hand-up"></span></button>
+                    <button type="button" class="btn tool-delete"><span class="glyphicon glyphicon-trash"></span></button>
+                    <button type="button" class="btn tool-editfeature"><span class="glyphicon glyphicon-wrench"></span></button>
+                    <button type="button" class="btn"><span class="glyphicon glyphicon-certificate"></span></button>
+                    <button type="button" class="btn"><span class="glyphicon glyphicon-certificate"></span></button>
+                    <button type="button" class="btn"><span class="glyphicon glyphicon-certificate"></span></button>
+                    <button type="button" class="btn"><span class="glyphicon glyphicon-certificate"></span></button>
+                    <button type="button" id="toolbutton_testScript" class="btn"><span class="glyphicon glyphicon-play-circle"></span></button>
+                    </div>
+                </div>
+                
+                <!-- MAIN WINDOW #####################################################################################################################-->
+                
+                <div class="main-window">
+                    <!-- LEFT SIDE BAR FOR LAYER SORTING ---------------------------------------------------------------------------------------------------->
+                    <div class="layers-side-pane">
+
+                        <div class="layers-header">
+             
+                            Layers Panel
+                        </div>
+                        <div class="layers-toolbar">
+                            <button type="button" class="btn layers-add-menu"><span class="glyphicon glyphicon-plus"></span></button>                    
+                        </div>
+    
+                        <div class="layers-list">
+                            
+                        </div>
+                    </div>
+
+
+
+                    <!-- MAIN MAP WINDOW ---------------------------------------------------------------------------------------------------->                    
+                    <div class="center-map-view">
+                        <div class="add-layer-select"></div>
+                        <div id="geo-engine-map" class="main-map-view">
+                                <!--geospatial stuff goes here-->
+                        </div>
+                    
+                        <div class="map-footer-stats">
+                        </div>
+                    
+                    </div>
+                    
+                    <!-- RIGHT SIDE BAR FOR DETAILS ---------------------------------------------------------------------------------------------------->                    
+                    <div class="details-side-pane">
+                    
+                    </div>
+                    
+                </div>
+            </div>
+                                                      
+
+
+            
+        </div>
+    </div>
+
+        <div id="testgeojson" hidden></div>
+    
+    
+    
+<!--=================================================================================================================-->
+<!--    ALL DOM TEMPLATES    -->
+<!--=================================================================================================================-->
+
+<div class="layer-parent vector TEMPLATE"  hidden>
+    <div class="layer-header">
+        <div class="layer-icon" title="Vector Layer"><span class="glyphicon glyphicon-star-empty"></span></div>
+        <div class="layer-title"></div>
+        <div class="layer-visibility"><span class="glyphicon glyphicon-eye-open"></span></div>
+    </div>    
+</div>
+    
+<div class="layer-parent tile TEMPLATE"  hidden>
+    <div class="layer-header">
+        <div class="layer-icon" title="Tile Layer"><span class="glyphicon glyphicon-th"></span></div>
+        <div class="layer-title"></div>
+        <div class="layer-visibility"><span class="glyphicon glyphicon-eye-open"></span></div>
+    </div>    
+</div>
+
+<div class="layer-parent raster TEMPLATE" hidden>
+    <div class="layer-header">
+        <div class="layer-icon" title="Raster Layer" ><span class="glyphicon glyphicon-picture"></span></div>
+        <div class="layer-title"></div>
+        <div class="layer-visibility"><span class="glyphicon glyphicon-eye-open"></span></div>
+    </div>    
+</div>    
+    
+    
+    
+    
+    
+    
+    
+{% endblock %}
+
+
+    {% block footer %}
+    {% if formtype.media_type != 3 %}
+
+    
+     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>
+ 
+        <script src="{% static 'js/enki-iframe-url-tester.js'  %}"></script> 
+        <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script> 
+
+       
+    {%endif%}        
+    {% if user_access >= access_level %}
+    <script>
+    
+    //***********************************************************************************************************************************************************************
+///////////////////////////////////////////////////////////////////////////////////////////////
+//  CODE FOR CSRF Protection Header
+//  Courtesty of: https://github.com/realpython/django-form-fun/blob/master/part1/main.js
+///////////////////////////////////////////////////////////////////////////////////////////////
+$(function() {
+
+
+    // This function gets cookie with a given name
+    function getCookie(name) {
+        var cookieValue = null;
+        if (document.cookie && document.cookie != '') {
+            var cookies = document.cookie.split(';');
+            for (var i = 0; i < cookies.length; i++) {
+                var cookie = jQuery.trim(cookies[i]);
+                // Does this cookie string begin with the name we want?
+                if (cookie.substring(0, name.length + 1) == (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+    var csrftoken = getCookie('csrftoken');
+    //console.log(csrftoken);
+    /*
+    The functions below will create a header with csrftoken
+    */
+
+    function csrfSafeMethod(method) {
+        // these HTTP methods do not require CSRF protection
+        return (/^(GET|HEAD|OPTIONS|TRACE)$/.test(method));
+    }
+    function sameOrigin(url) {
+        // test that a given url is a same-origin URL
+        // url could be relative or scheme relative or absolute
+        var host = document.location.host; // host + port
+        var protocol = document.location.protocol;
+        var sr_origin = '//' + host;
+        var origin = protocol + sr_origin;
+        // Allow absolute or scheme relative URLs to same origin
+        return (url == origin || url.slice(0, origin.length + 1) == origin + '/') ||
+            (url == sr_origin || url.slice(0, sr_origin.length + 1) == sr_origin + '/') ||
+            // or any other URL that isn't scheme relative or absolute i.e relative.
+            !(/^(\/\/|http:|https:).*/.test(url));
+    }
+
+    $.ajaxSetup({
+        beforeSend: function(xhr, settings) {
+            if (!csrfSafeMethod(settings.type) && sameOrigin(settings.url)) {
+                // Send the token to same-origin, relative URLs only.
+                // Send the token only if the method warrants CSRF protection
+                // Using the CSRFToken value acquired earlier
+                xhr.setRequestHeader("X-CSRFToken", csrftoken);
+                console.log(xhr);
+            }
+        }
+    });
+
+});
+        function getAPIEndpoints(){
+            return JSON.parse('{{api_urls|safe}}');
+        }
+        //GLOBALS//
+        var RTYPE_LIST;
+        var CURRENT_PROJECT_PK = '{{project.pk}}';
+        var INITIALIZATION_CODE = 2;
+        var API_URLS = getAPIEndpoints();
+        var DEFAULT_GEOJSON = '{{project.geojson_string}}';
+        
+     
+        
+
+ //GEOSPATIAL STUFF       
+        
+        
+        
+ 
+
+// ***************************************START OF GEOSPATIAL ENGINE ******************************************* 
+ 
+//--------------------------------------------------------
+//  Define all needed Projections here
+//
+//  I may move this to the database, or a static file that contains all relevant projections, e.g. all UTM WGS84 projections
+//  --and load them in a loop, or alternatively on the fly depending on what projection is defined in the geometry of the 
+//  --geojson. for NOW--we will stick with the 38n UTM projection Al-Hiba(and probably other Iraqi arch sites will use
+
+
+//***NOTES
+//  --Openlayers actual <canvas> element is incredibliy difficult to control with page resizing.
+//  --I finally found a way to tame its behavior by setting the canvas element to "Absolute" positioning
+//  --Seems...? to do the trick? Otherwise the 100% height attribute was forcing the parent element to 
+//  --constantly increase in height on resizing. This is because openlayers works with raw pixel values for height/width
+//  --of the canvas rather than browser percentages. Absolute--I suppose--gets the browser to send it proper pixel
+//  --values to use.
+
+proj4.defs("EPSG:32638","+proj=utm +zone=38 +ellps=WGS84 +datum=WGS84 +units=m +no_defs");
+
+
+//---------------------------------------------------------
+//  Setup all GLOBAL variables for the engine
+
+//The main MAP div
+var MAP;
+var DRAW_EVENT;
+var SELECTION_EVENT;
+
+var mainProjection = new ol.proj.Projection({code: 'EPSG:32638', units: 'm' });
+//=====================================
+//setup buttons associated with engine 
+
+//---------------------------
+//  TOOL BAR
+
+$toolbutton_editmode  = $('#toolbutton_editmode');
+$toolbutton_delfeature  = $('#toolbutton_delfeature');
+$toolbutton_select  = $('#toolbutton_select');
+$toolbutton_measure  = $('#toolbutton_measure');
+$toolbutton_draw  = $('#toolbutton_draw');
+$toolbutton_zoomin = $('#toolbutton_zoomin');
+$toolbutton_zoomout = $('#toolbutton_zoomout');
+$toolbutton_zoomextent = $('#toolbutton_zoomextent');
+$toolbutton_selectMode = $('#toolbutton_selectMode');
+$toolbutton_testScript = $('#toolbutton_testScript');
+
+
+
+
+
+//-------------------------------------------------------------------------------------------------------
+//  Special Functions
+//
+
+function displayListOfLayers(){
+    MAP.getLayers().getArray().forEach(function(layer,i){
+        console.log(layer.type);
+        console.log(layer.get('name'));
+        
+        if (layer.type == "TILE"){
+            console.log('test');
+            $newLayer = $('.layer-parent.tile.TEMPLATE').clone(true);
+        } else if (layer.type == "IMAGE") {
+            $newLayer = $('.layer-parent.raster.TEMPLATE').clone(true);
+        } else if (layer.type == "VECTOR") {
+            $newLayer = $('.layer-parent.vector.TEMPLATE').clone(true);
+        }
+        console.log($newLayer);
+        $newLayer.removeClass('TEMPLATE');
+        $newLayer.find('.layer-title').html(layer.get('name'));
+        $('#geospatial-engine').find('.layers-list').append($newLayer);
+        $newLayer.show();
+    });
+
+}
+
+
+//-------------------------------------------------------------------------------------------------------
+//  Start the geospatial engine once the document as fully loaded
+//
+$(document).ready(function(){
+
+
+//====================================================================
+// Button Action Setup
+
+
+$toolbutton_testScript.click( function(){
+    var postJSON = [];
+    postJSON.push( {name:'formtype_pk', value:'339'});
+    $.ajax({ 
+     url   : 'http://67.205.135.223/admin/get_formtype_geospatial_layers/',
+     type  : "POST",
+     data  : postJSON, // data to be submitted
+
+     success : function(returnedQuery){
+            console.log(returnedQuery);
+            var geojson_collection;
+            var geojson_object = new ol.format.GeoJSON().readFeatures($('#testgeojson').html());
+
+        var templayer = new ol.layer.Image({
+            source: new ol.source.ImageVector({
+                source: new ol.source.Vector({features: new ol.Collection(geojson_object)}),
+                style: new ol.style.Style({
+                fill: new ol.style.Fill({
+                  color: 'rgba(255, 255, 255, 0.6)'
+                }),
+                stroke: new ol.style.Stroke({
+                  color: '#319FD3',
+                  width: 1
+                })
+              })
+            })
+          })
+            
+            MAP.addLayer(templayer);
+        }
+    });    
+});
+
+
+
+function drawEnd(event){
+    console.log('We did it?');
+    console.log(event);
+    MAP.removeInteraction(DRAW_EVENT); 
+
+}
+
+$toolbutton_draw.click( function(){
+
+
+    DRAW_EVENT = new ol.interaction.Draw({
+        source: baseImageLayer.getSource().getSource(),
+        type: ('Polygon')
+    });
+    DRAW_EVENT.on('drawend', drawEnd);
+    //This activates AFTER drawend--and since we need the information after the feature has been added to the source, this is a better event listener
+    baseImageLayer.getSource().getSource().on('addfeature', function (event){
+            console.log('Successful drawing!')
+    });
+    MAP.addInteraction(DRAW_EVENT);
+
+
+});
+
+
+
+$('.layers-add-menu').click( function() {
+    //first populate a list of available projects
+    
+    
+    
+});
+
+
+//====================================================================
+// Map Setup
+
+
+//*********************************************************************
+// Setup the base map vector layer 
+var emptyCollection = '{"type": "FeatureCollection","name": "alhiba-areas","crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::32638" } },"features": []}'
+
+
+var baseVectorLayer = new ol.layer.Vector({
+    name: "Base Vector",
+    source: new ol.source.Vector(),
+    style: new ol.style.Style({
+        fill: new ol.style.Fill({
+            color: 'rgba(255, 255, 255, 0.2)'
+        }),
+        stroke: new ol.style.Stroke({
+            color: '#ffcc33',
+            width: 2
+        }),
+        image: new ol.style.Circle({
+            radius: 7,
+            fill: new ol.style.Fill({
+                color: '#ffcc33'
+            })
+        })
+    })
+});
+    
+
+
+//*********************************************************************
+// Setup a test Image Layer for faster Vector processing
+
+var baseImageLayer = new ol.layer.Image({
+            name: "Base Vector Layer",
+            source: new ol.source.ImageVector({
+                source: new ol.source.Vector(),
+                style: new ol.style.Style({
+                fill: new ol.style.Fill({
+                  color: 'rgba(255, 255, 255, 0.6)'
+                }),
+                stroke: new ol.style.Stroke({
+                  color: '#319FD3',
+                  width: 1
+                })
+              })
+            })
+          })
+
+//*********************************************************************
+// Setup the base map raster layer 
+
+
+//Set up the tile server / Background image raster
+var baseRasterLayer = new ol.layer.Tile({
+    name: "Base Map",
+    //We are going to set the background tileset to ESRI's satellite imagery using this source()
+    source: new ol.source.XYZ({
+            projection: 'EPSG:3857',
+            wrapX: false,
+            attributions: [
+              new ol.Attribution({
+                html: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+              })
+            ],
+            url: 'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+          })
+        
+});
+
+
+//**********************************************************************       
+// Draw the actual map on the screen
+MAP = new ol.Map({
+    //Add our controls
+    controls: ol.control.defaults({
+      attributionOptions: /** @type {olx.control.AttributionOptions} */ ({
+        collapsible: false
+      })
+    }).extend([new ol.control.ScaleLine({ units: 'metric'})] ),
+    //set the layers to the tile server (raster) and add the initial Vector(shapeFile) layer 
+    layers: [baseRasterLayer, baseVectorLayer, baseImageLayer],
+    target: 'geo-engine-map',
+    //This is a default view set that views the whole world from an appropriate zoom level
+    view: new ol.View({
+      projection:mainProjection,
+      center: [0,0],
+      zoom: 1,
+    })
+});
+
+displayListOfLayers();
+
+
+//**********************************************************************
+// Setup cursor highliting
+       var highlight;
+       
+      var displayFeatureInfo = function(pixel) {
+
+        var feature = MAP.forEachFeatureAtPixel(pixel, function(feature) {
+          return feature;
+        });
+
+        var info = $('.details-side-pane')[0];
+        if (feature) {
+            var newString = ""
+            var props = feature.getProperties();
+            Object.keys(props).forEach(function(key){
+                
+                newString += "<div><span>"+key+"</span>::<span>"+props[key]+"</span></div>"
+            });
+          info.innerHTML = newString;
+        } else {
+          info.innerHTML = '&nbsp;';
+        }
+
+
+      };
+
+      MAP.on('pointermove', function(evt) {
+        if (evt.dragging) {
+          return;
+        }
+        var pixel = MAP.getEventPixel(evt.originalEvent);
+        displayFeatureInfo(pixel);
+      });
+
+
+
+
+
+
+});
+
+  $(window).resize(function () {
+       // $("#geo-engine-map").css("height", 'calc('+$('#geo-engine-map').parent().height()+'px - 5%)' ); MAP.updateSize();
+   });
+//----------------------------------------------------------------------------------------------------------
+//End of geospatial engine
+//^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+
+
+
+/*
+
+$(document).raeady(function(){
+  
+
+
+
+ 
+var prev_el_selector = '#geospatial';
+$prevEl = $(prev_el_selector);
+$prevEl.prepend( $('<div id="test-map" class="col-md-12"></div>') ); 
+
+   
+        var helpText = document.getElementById('gis-help-text-box');      
+
+        window.app = {};
+        var app = window.app;
+        
+        
+        
+        
+        app.EditModeControl = function(opt_options) {
+
+            var options = opt_options || {};
+
+            //Create Edit Mode Button            
+            var button_editmode = $('<button class="gis-button gis-button-off" id="gis-button-edit" type="button" title="OFF"><span class="glyphicon glyphicon-pencil"></span></button>')
+         
+            //Create Vector Shape Type Drop Down
+            var vectorselect_form = document.createElement('form');
+            vectorselect_form.className = 'gis-button';
+            vectorselect_form.id = 'gis-vector-select';
+            vectorselect_form.style.marginBottom = '0px';
+            var vectorselect_select = document.createElement('select');
+            vectorselect_select.id = 'gis-vector-select-type';
+            vectorselect_select.disabled = true;
+            var vectorselect_option_point = document.createElement('option');
+            vectorselect_option_point.innerHTML = 'Point';
+            vectorselect_option_point.value = 'Point'
+            var vectorselect_option_polyline = document.createElement('option');
+            vectorselect_option_polyline.innerHTML = 'PolyLine';
+            vectorselect_option_polyline.value = 'LineString'
+            var vectorselect_option_polygon = document.createElement('option');
+            vectorselect_option_polygon.innerHTML = 'Polygon';
+            vectorselect_option_polygon.value = 'Polygon'
+            var vectorselect_option_circle = document.createElement('option');
+            vectorselect_option_circle.innerHTML = 'Cicle';
+            vectorselect_option_circle.value = 'Circle'
+            vectorselect_form.appendChild(vectorselect_select);
+            vectorselect_select.appendChild(vectorselect_option_point);
+            vectorselect_select.appendChild(vectorselect_option_polyline);
+            vectorselect_select.appendChild(vectorselect_option_polygon);
+            vectorselect_select.appendChild(vectorselect_option_circle);
+            
+            //Create Selection Button
+            var button_selectMode = $('<button class="gis-button gis-button-off" id="gis-button-select" type="button" title="OFF"><span class="glyphicon glyphicon-hand-up"></span></button>')
+
+            
+            //Create Delete Button
+            var button_delfeature = $('<button class="gis-button gis-button-del" id="gis-button-del-feature" type="button" title="OFF"><span class="glyphicon glyphicon-trash"></span></button>')
+           
+           //Create load all formtype features button
+           var button_addAllLayers = $('<button class="gis-button" style="width: 11%;background-color: #44caa3;" id="gis-button-add-layers" type="button" title="OFF"><span class="glyphicon glyphicon-plus"></span><span class="glyphicon glyphicon-list"></span></button>')
+           
+            //Self reference variable
+            var this_ = this;
+            
+            
+            //Add Listeners/Functions for applicable buttons
+
+            
+            var addAllFormTypeLayers = function() {
+                var postJSON = [];
+                postJSON.push( {name:'formtype_pk', value:CURRENT_FORMTYPE_PK});
+                $.ajax({ 
+                 url   : 'http://67.205.135.223/admin/get_formtype_geospatial_layers/',
+                 type  : "POST",
+                 data  : postJSON, // data to be submitted
+
+                 success : function(returnedQuery){
+                        console.log(returnedQuery);
+                        var geojson_collection;
+                        var geojson_object = new ol.format.GeoJSON();
+                        try {
+                            geojson_object = new ol.format.GeoJSON().readFeatures(returnedQuery);
+                            console.log(geojson_object.readProjection);
+                            geojson_collection = new ol.Collection(geojson_object);
+                        } catch(error) {
+                            console.log(error);
+                            geojsontest_element.innerHTML = '{"type":"FeatureCollection","features":[]}';
+                            geojson_string = JSON.stringify(returnedQuery);
+                            geojson_collection = new ol.Collection(new ol.format.GeoJSON().readFeatures(geojson_string));
+                            helpText.innerHTML = "Error parsing geoJSON string. Adding Empty geoJSON to field";     
+                        }
+                        var test = new ol.source.Vector({
+                            features: geojson_collection,
+                            wrapX: false
+                        });
+
+
+                        var templayer = new ol.layer.Vector({
+                            source: test,
+                            style: new ol.style.Style({
+                                fill: new ol.style.Fill({
+                                    color: 'rgba(255, 255, 255, 0.2)'
+                                }),
+                                stroke: new ol.style.Stroke({
+                                    color: '#ffccdd',
+                                    width: 2
+                                }),
+                                image: new ol.style.Circle({
+                                    radius: 7,
+                                    fill: new ol.style.Fill({
+                                        color: '#ffcc33'
+                                    })
+                                })
+                            })
+                        });
+                        
+                        MAP.addLayer(templayer);
+                    }
+                });    
+            };
+            
+
+            
+            var deleteFeature = function() {
+                //Make sure there are features in the selection to delete
+                if(typeof selection != 'undefined'){
+                    vectorSource.removeFeature(selection.getFeatures().item(0));
+                    selection.getFeatures().clear();
+                    checkIfOnlyOneVectorDrawn(false)
+                    updateFormGeoJSON();
+                }
+            };
+            
+            var turnOnSelect = function() {
+                if(button_selectMode[0].title == 'OFF'){
+                    //Turning Select Mode On
+                    button_selectMode[0].className = 'gis-button gis-button-on';
+                    button_selectMode[0].title = 'ON';
+                    addSelectInteraction();
+                    checkForOneActiveCPButton(button_selectMode[0]);
+                } else {
+                    //Turning Select Mode Off
+                    button_selectMode[0].className = 'gis-button gis-button-off';
+                    button_selectMode[0].title = 'OFF';
+                    MAP.removeInteraction(selection[0]);
+                }
+            };
+            
+            var turnOnEditMode = function() {
+                if(button_editmode[0].title == 'OFF'){
+                    //Turning Edit Mode On
+                    button_editmode[0].title = 'ON';
+                    button_editmode[0].className = 'gis-button gis-button-on';
+                    addDrawInteraction();
+                    typeSelect.disabled = false;
+                    checkForOneActiveCPButton(button_editmode[0]);
+
+                } else {
+                    //Turning Edit Mode Off
+                    button_editmode[0].title = 'OFF';
+                    button_editmode[0].className = 'gis-button gis-button-off';
+                    typeSelect.disabled = true;
+                    MAP.removeInteraction(draw);
+                }
+            };
+            
+            //listener for a mouse click
+            button_delfeature[0].addEventListener('click', deleteFeature, false);
+            //This adds a listener for touch devices e.g. phones / tablets
+            button_delfeature[0].addEventListener('touchstart', deleteFeature, false);
+            
+            //listener for a mouse click
+            button_selectMode[0].addEventListener('click', turnOnSelect, false);
+            //This adds a listener for touch devices e.g. phones / tablets
+            button_selectMode[0].addEventListener('touchstart', turnOnSelect, false);
+            
+            //listener for a mouse click
+            button_editmode[0].addEventListener('click', turnOnEditMode, false);
+            //This adds a listener for touch devices e.g. phones / tablets
+            button_editmode[0].addEventListener('touchstart', turnOnEditMode, false);
+            
+            //listener for a mouse click
+            button_addAllLayers[0].addEventListener('click', addAllFormTypeLayers, false);
+            //This adds a listener for touch devices e.g. phones / tablets
+            button_addAllLayers[0].addEventListener('touchstart', addAllFormTypeLayers, false);            
+            
+            //Create container to hold the button in OpenLayers that is addded to the standard controls
+            var element = document.createElement('div');
+            element.className = 'edit-mode ol-unselectable ol-control';
+            element.appendChild(button_editmode[0]);
+            element.appendChild(vectorselect_form);
+            element.appendChild(button_selectMode[0]);
+            element.appendChild(button_delfeature[0]);
+            element.appendChild(button_addAllLayers[0]);
+
+
+
+            ol.control.Control.call(this, {
+                element: element,
+                target: options.target
+            });
+
+        };
+        ol.inherits(app.EditModeControl, ol.control.Control);
+
+
+        var geojsontest_element =  document.getElementById('id_geojson_string');
+
+        var geojson_string = geojsontest_element.innerHTML;
+        console.log(geojson_string);
+        geojson_string = geojson_string.replace(/'/g, "\"");
+
+        //var geojson_format = new ol.format.GeoJSON();
+        var geojson_collection;
+        var geojson_object = new ol.format.GeoJSON();
+        try {
+            geojson_object = new ol.format.GeoJSON().readFeatures(geojson_string);
+            console.log(geojson_object.readProjection);
+            geojson_collection = new ol.Collection(geojson_object);
+        } catch(error) {
+            console.log(error);
+            try {
+                geojsontest_element.innerHTML = DEFAULT_GEOJSON;
+                geojson_collection = new ol.Collection(new ol.format.GeoJSON().readFeatures(geojson_string));
+            }catch(err) {
+                geojsontest_element.innerHTML = ''
+                geojson_collection = [];
+            }
+
+           
+            helpText.innerHTML = "Error parsing geoJSON string. Adding Empty geoJSON to field";     
+        }
+        
+
+        var testProjection = new ol.proj.Projection({
+            code: 'EPSG:32638',
+            units: 'm'
+        });
+        
+        var vectorSource = new ol.source.Vector({
+            features: geojson_collection,
+            wrapX: false
+        });
+
+        var vectorLayer = new ol.layer.Vector({
+            source: vectorSource,
+            style: new ol.style.Style({
+                fill: new ol.style.Fill({
+                    color: 'rgba(255, 255, 255, 0.2)'
+                }),
+                stroke: new ol.style.Stroke({
+                    color: '#ffcc33',
+                    width: 2
+                }),
+                image: new ol.style.Circle({
+                    radius: 7,
+                    fill: new ol.style.Fill({
+                        color: '#ffcc33'
+                    })
+                })
+            })
+        });
+        
+
+
+        //Set up the tile server / Background image raster
+        var raster = new ol.layer.Tile({
+            //We are going to set the background tileset to ESRI's satellite imagery using this source()
+            source: new ol.source.XYZ({
+                    projection: 'EPSG:3857',
+                    wrapX: false,
+                    attributions: [
+                      new ol.Attribution({
+                        html: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                      })
+                    ],
+                    url: 'http://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                  })
+           // extent: ol.proj.get("EPSG:4326").getExtent()
+                
+        });
+
+
+        
+        //This creates the map container and sets it to the div element created with the HTML ID 'test-map'
+        MAP = new ol.Map({
+            //Add our controls
+            controls: ol.control.defaults({
+              attributionOptions:  ({
+                collapsible: false
+              })
+            }).extend([new app.EditModeControl(),  new ol.control.ScaleLine({ units: 'metric'})] ),
+            //set the layers to the tile server (raster) and add the initial Vector(shapeFile) layer read from the current Database geojson entry
+            layers: [raster,vectorLayer],
+            target: 'test-map',
+            //This is a default view set that views the whole world from an appropriate zoom level
+            view: new ol.View({
+              projection: testProjection,
+              center: [0,0],
+              zoom: 1,
+            })
+        });
+
+        //This sets the map to start over where the current feature--if it exists--lies.
+        if (vectorSource.getFeatures().length > 0){
+            MAP.getView().fit(vectorSource.getFeatures()[0].getGeometry(), MAP.getSize());
+        } 
+        
+        var draw; // global so we can remove it later
+        var selection; //ditto
+        var typeSelect = document.getElementById('gis-vector-select-type');
+        
+       // var saveButton = document.getElementById('saveGeometryButton');
+        //var deleteFeatureButton = document.getElementById('deleteSelectedFeatureButton');
+        
+        
+        //Control Panel Buttons
+        var editButton = document.getElementById('gis-button-edit');
+        var selectButton = document.getElementById('gis-button-select');
+       
+        var controlPanel_Buttons = [editButton, selectButton];
+       
+        function checkForOneActiveCPButton(buttonToKeepOn){
+            for(var i =0; i < controlPanel_Buttons.length; i++){
+                if(controlPanel_Buttons[i] != buttonToKeepOn){
+                    //Turn the button off if not already off
+                    if(controlPanel_Buttons[i].title != "OFF"){
+                        controlPanel_Buttons[i].click();
+                    }
+                }
+            }
+            
+        }
+       
+       
+        function drawEnd(){
+            MAP.removeInteraction(draw);
+            editButton.click();
+            checkIfOnlyOneVectorDrawn(true)
+            
+        }
+        
+        function addDrawInteraction() {
+
+            draw = new ol.interaction.Draw({
+                features: geojson_collection,
+                type: (typeSelect.value)
+            });
+            draw.on('drawend', drawEnd);
+            //This activates AFTER drawend--and since we need the information after the feature has been added to the source, this is a better event listener
+            vectorSource.on('addfeature', function (event){
+                updateFormGeoJSON();
+            })
+            MAP.addInteraction(draw);
+        }
+
+
+        //**********Set up all button click events
+        typeSelect.onchange = function() {
+            MAP.removeInteraction(draw);
+            addDrawInteraction();
+        };
+        
+
+        helpText.onclick = function() {
+                helpText.innerHTML = vectorLayer.getSource().getFeatures().length;
+        }
+        
+        function updateFormGeoJSON(){
+            var geojsoninstance = new ol.format.GeoJSON();
+            var newString = geojsoninstance.writeFeatures(vectorLayer.getSource().getFeatures());
+            document.getElementById('id_geojson_string').innerHTML  = newString;   
+        }
+        
+        function checkIfOnlyOneVectorDrawn(drawingFinished) {
+            //If there are too many vectors e.g. at least one
+            //Don't let the user add any more
+            if(vectorLayer.getSource().getFeatures().length >= 1 || drawingFinished){
+                //disable the edit button and show alt text message
+                editButton.disabled = true;
+                helpText.className = 'gis-status-warning';
+                helpText.innerHTML = "Only one shape vector allowed per object. In order to add another shape vector. You must delete the current one.";
+                return true;
+            //Otherwise we have zero vectors so let the user draw one
+            } else {
+                editButton.disabled = false;
+                helpText.className = 'gis-status-okay';
+                helpText.innerHTML = "No Problems Detected";
+                return false;
+            }
+        }
+        
+        function addSelectInteraction(){
+            selection = new ol.interaction.Select({
+                condition: ol.events.condition.click
+            });
+            MAP.addInteraction(selection);
+        }
+
+        //Functions that run at startup
+        checkIfOnlyOneVectorDrawn(false)
+
+        
+        
+       var highlight;
+       
+      var displayFeatureInfo = function(pixel) {
+
+        var feature = MAP.forEachFeatureAtPixel(pixel, function(feature) {
+          return feature;
+        });
+
+        var info = document.getElementById('gis-help-text-box');
+        if (feature) {
+            var newString = ""
+            var props = feature.getProperties();
+            Object.keys(props).forEach(function(key){
+                
+                newString += "<div><span>"+key+"</span>::<span>"+props[key]+"</span></div>"
+            });
+          info.innerHTML = newString;
+        } else {
+          info.innerHTML = '&nbsp;';
+        }
+
+
+      };
+
+      MAP.on('pointermove', function(evt) {
+        if (evt.dragging) {
+          return;
+        }
+        var pixel = MAP.getEventPixel(evt.originalEvent);
+        displayFeatureInfo(pixel);
+      });
+
+      MAP.on('click', function(evt) {
+        displayFeatureInfo(evt.pixel);
+      });        
+        
+        
+      
+        
+    // ***************************************END OF ALL OPENLAYERS CODE ******************************************* 
+});
+*/
+
+
+
+        
+       
+        
+        
+        
+    </script>
+
+    {% endif %}
+    {% endblock %}

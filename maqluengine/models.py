@@ -96,12 +96,12 @@ class FormProject(models.Model):
     name = models.CharField('Project Name', max_length=50)    
     description = models.TextField(blank=True, null=True)
     
+    uri_img = models.CharField(max_length=255, blank=True, null=True, default="")
     #URI Variables
-    uri_img = models.CharField(max_length=255, blank=True, null=True)
-    uri_thumbnail = models.CharField(max_length=255, blank=True, null=True)
-    uri_download = models.CharField(max_length=255, blank=True, null=True)
-    uri_upload = models.CharField(max_length=255, blank=True, null=True)
-    uri_upload_key = models.CharField(max_length=255, blank=True, null=True)
+    uri_thumbnail = models.CharField(max_length=255, blank=True, null=True, default="")
+    uri_download = models.CharField(max_length=255, blank=True, null=True, default="")
+    uri_upload = models.CharField(max_length=255, blank=True, null=True, default="")
+    uri_upload_key = models.CharField(max_length=255, blank=True, null=True, default="")
     geojson_string = models.TextField(blank=True, null=True)
     
     #-----------------------------
@@ -137,8 +137,8 @@ class FormType(models.Model):
     form_type_name = models.CharField(max_length=50, blank=True, null=True)
     type = models.IntegerField()#What kind of harcoded form type is it: e.g. 0= standard, 1= Media
     media_type = models.IntegerField(default=-1) #is is an image 0, a pdf 1, or somethings else
-    file_extension = models.CharField(max_length=10, blank=True, null=True)
-    uri_prefix = models.CharField(max_length=20, blank=True, null=True)
+    file_extension = models.CharField(max_length=10, blank=True, null=True, default="")
+    uri_prefix = models.CharField(max_length=20, blank=True, null=True, default="")
     is_hierarchical = models.BooleanField(default=False)#determines whether or not the formtype's forms follow a hierchical structure
 
     #----------------------------
@@ -159,7 +159,11 @@ class FormType(models.Model):
     #----------------------------
     # Model Relation Variables
     project = models.ForeignKey(FormProject, on_delete=models.CASCADE)
-    form_type_group = models.ForeignKey(FormTypeGroup, on_delete=models.CASCADE, blank=True, null=True)
+    form_type_group = models.ForeignKey(FormTypeGroup, on_delete=models.SET_NULL, blank=True, null=True)
+    
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
         
     def __str__(self):
         if self.form_type_name is not None:
@@ -207,6 +211,10 @@ class FormRecordAttributeType(models.Model):
     date_last_modified = models.DateTimeField(auto_now = True, auto_now_add = False,blank=True, null=True)
     modified_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='frat_ref_to_user_modifier', blank = True, null=True,on_delete=models.SET_NULL)
     
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
+            
     def __str__(self):
         if self.record_type is not None:
             return self.record_type
@@ -239,6 +247,10 @@ class FormRecordReferenceType(models.Model):
     date_last_modified = models.DateTimeField(auto_now = True, auto_now_add = False,blank=True, null=True)
     modified_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='frrt_ref_to_user_modifier', blank = True, null=True,on_delete=models.SET_NULL)
     
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
+            
     def __str__(self):
         if self.record_type is not None:
             return self.record_type
@@ -286,6 +298,10 @@ class Form(models.Model):
     # Model Relation Variables
     form_type = models.ForeignKey(FormType, on_delete=models.CASCADE)
     
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
+            
     def __str__(self):
         if self.form_number is not None:
            return str(self.form_number)
@@ -365,8 +381,13 @@ class FormRecordAttributeValue(models.Model):
     #----------------------------
     # Model Relation Variables
     record_attribute_type = models.ForeignKey(FormRecordAttributeType, on_delete=models.CASCADE)
-    form_parent = models.ForeignKey(Form, null=True, blank=True)
+    form_parent = models.ForeignKey(Form, null=True, blank=True, on_delete=models.CASCADE)
     project = models.ForeignKey(FormProject, on_delete=models.CASCADE)
+    
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
+        
     def __str__(self):
         if self.record_value is not None:
             return self.record_value
@@ -388,7 +409,7 @@ class FormRecordReferenceValue(models.Model):
     #This foreignKey stores the actual Form, that this Reference is for, e.g. This is a specific Object Sheet entry
     form_parent = models.ForeignKey(Form, related_name='ref_to_parent_form')
     #This is referencing the Record Reference Type that is associated with the Form Type of this Form
-    record_reference_type = models.ForeignKey(FormRecordReferenceType)
+    record_reference_type = models.ForeignKey(FormRecordReferenceType, on_delete=models.CASCADE)
     project = models.ForeignKey(FormProject, on_delete=models.CASCADE)
     #----------------------------
     # Read-only Attributes
@@ -397,6 +418,10 @@ class FormRecordReferenceValue(models.Model):
     date_last_modified = models.DateTimeField(auto_now = True, auto_now_add = False,blank=True, null=True)
     modified_by = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='formref_ref_to_user_modifier', blank = True, null=True,on_delete=models.SET_NULL)
     
+    #----------------------------
+    # Recycling Bin Flag
+    flagged_for_deletion = models.BooleanField(default=False, null=False, blank=False)
+            
     def save(self, *args, **kwargs):
         self.project = self.form_parent.project
         super(FormRecordReferenceValue, self).save(*args, **kwargs)
@@ -420,6 +445,10 @@ class Permissions(models.Model):
     #Some meta fields to describe the user
     job_title = models.CharField('Enter a Title', max_length=100)
 
+    #Some stored user data(These will hold JSON strings)
+    custom_templates = models.TextField(blank=True, null=True)
+    saved_queries = models.TextField(blank=True, null=True)
+    
 @receiver(post_save, sender=User)
 def create_user_permissions(sender, instance, created, **kwargs):
     if created:

@@ -53,6 +53,11 @@ from django.core import serializers
 
 import uuid
 
+import zipfile
+import io
+import contextlib
+
+
 ###########################################################################################################
 #      ERROR / INFO LOGGER SETUP
 ###########################################################################################################
@@ -209,8 +214,45 @@ def SECURITY_check_user_permissions(requiredLevel, userLevel):
     #Otherwise the User does NOT have permission to access the View requesting authentication
     return False
         
-        
-        
+##==========================================================================================================================   
+## Helper Functions ****************************************************************************************
+##==========================================================================================================================        
+ 
+def get_api_endpoints():
+
+    #------------------------------------------------------------------------------------------------------------------------------------
+    #:::This endpoint returns a JSON list of all urls to the admin endpoints in a key:value json object for admin views to pass to their
+    #   --templates, which the javascript functions will access to get dynamic URLS without having to change them later
+    #
+    #   This endpoint is not project specific so there is no security by project--only the access level of being an admin user
+    #------------------------------------------------------------------------------------------------------------------------------------
+    #Make a key value list of our URLS and add them by name
+    jsonData = {}
+    jsonData['get_rtypes'] = reverse('maqlu_admin:get_rtype_list')
+    jsonData['get_rtypes_rvals'] = reverse('maqlu_admin:get_form_rtypes') 
+    jsonData['get_formtype_forms'] = reverse('maqlu_admin:get_formtype_form_list')     
+    jsonData['create_new_template'] = reverse('maqlu_admin:create_new_form_type_template')
+    jsonData['load_recycling_bin'] = reverse('maqlu_admin:load_recycling_bin')
+    jsonData['restore_form_type'] = reverse('maqlu_admin:restore_form_type')
+    jsonData['recycle_form_type'] = reverse('maqlu_admin:recycle_form_type')
+    jsonData['delete_form_type'] = reverse('maqlu_admin:delete_form_type')
+    jsonData['restore_form'] = reverse('maqlu_admin:restore_form')
+    jsonData['recycle_form'] = reverse('maqlu_admin:recycle_form')
+    jsonData['delete_form'] = reverse('maqlu_admin:delete_form')
+    jsonData['restore_frat'] = reverse('maqlu_admin:restore_frat')
+    jsonData['recycle_frat'] = reverse('maqlu_admin:recycle_frat')
+    jsonData['delete_frat'] = reverse('maqlu_admin:delete_frat')
+    jsonData['restore_frrt'] = reverse('maqlu_admin:restore_frrt')
+    jsonData['recycle_frrt'] = reverse('maqlu_admin:recycle_frrt')
+    jsonData['delete_frrt'] = reverse('maqlu_admin:delete_frrt')
+    jsonData['create_form'] = reverse('maqlu_admin:create_new_form')
+    jsonData['edit_form'] = reverse('maqlu_admin:save_form_changes')
+    #convert python dict to a json string and send it back as a response
+    jsonData = json.dumps(jsonData);
+    return jsonData       
+    
+    
+    
 #=======================================================================================================================================================================================================================================
 #=======================================================================================================================================================================================================================================
 #       END OF CUSTOM ADMIN FUNCTIONS
@@ -235,12 +277,742 @@ class MyAdminSite(AdminSite):
     ## AJAX ADMIN API ENDPOINTS ************************************************************************************************
     ##==========================================================================================================================
 
+    #-------------------------------------------------------------------------------------------------------
+    # EXPORTER ENDPOINTS
+
     #=======================================================#
-    #   ACCESS LEVEL :  4     DELETE_FORM_TYPE()
+    #   ACCESS LEVEL :  1    EXPORT_PROJECT()
+    #=======================================================#     
+    def export_project(self, request, **kwargs):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a Project pk value and returns a .zip file containing either flattened set of .csv files  or .json file export of ALL form types and their
+        #   --associated forms/values, etc. It additionally includes a separate CSV
+        #
+        #   The CSV file has the following columns:
+        #                                                                                   
+        #   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -- - - --- ----
+        #   |  Form_PK  |   Form_Name   |   FormType_PK |   FormType_Name   |  Att_Name_1 | Att_Name_2  |     Ref_Att_Name_1_PKs     | Ref_Att_Name_1_Labels | Reff Ref_Att_Name_2 | ...... ..... .....
+        #   ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- --   -- - --  --
+        #   |  000      |   Object A    |       000     |    Object Sheet   |  Att Value  |  Att Value  |  Val1_pk, Val2_pk, Val3_pk | Val1, Val2, Val3      |  .....  ....   .... ... . .. 
+        #
+        #   This is essentially a list of forms with column headings a direct 1:1 copy of FRATs. The FRRTs are a little more complex. Each FRRT is given in
+        #   --2 columns to provide both a comma separated list of referenced form names, and a comma seperated list of their database PK values. The names
+        #   --might be enough, but I like to have both for completion sake.
+        
+        
+        ERROR_MESSAGE = ""
+        print >> sys.stderr, request
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            project = FormProject.objects.get(pk=request.POST['id'])
+            if project.pk == request.user.permissions.project.pk:
+            
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"row_index":"0","row_total":"0","is_complete":"False","row_timer":"0"}')
+                progressData.save()                
+                keepAliveTimer = time.clock()
+                
+                all_dicts = []
+                all_formTypes = FormType.objects.all().filter(project__pk=project.pk)
+                
+
+                
+                if all_formTypes:
+                    counter = 0
+                    total_formtypes = len(all_formTypes)
+                    percent_formtype_interval = 100.0 / total_formtypes
+                    print >>sys.stderr, percent_formtype_interval
+                    for formtype in all_formTypes:
+                        print >>sys.stderr, "Currently Loading: " + formtype.form_type_name
+                        
+                        formtype_pct_done = counter * percent_formtype_interval
+                        print >>sys.stderr, formtype_pct_done
+                        progressData.jsonString = '{"percent_done":"'+str(formtype_pct_done)+'","current_formtype":"'+str(formtype.form_type_name)+'","is_complete":"False", "formtype_total":"'+str(total_formtypes)+'"}'
+                        progressData.is_complete = False
+                        progressData.save()
+                        
+                        counter += 1
+                        
+                        all_forms = formtype.form_set.all().filter(flagged_for_deletion=False)
+                        # Load all of our FRATs and FRRTs
+                        all_FRATs = formtype.formrecordattributetype_set.all().filter(flagged_for_deletion=False);
+                        all_FRRTs = formtype.ref_to_parent_formtype.all().filter(flagged_for_deletion=False);
+                        
+                        formtype_dict = []
+                        formCounter = 0;
+                        total_forms = len(all_forms)
+                        form_pct_interval = percent_formtype_interval/total_forms
+                        print >>sys.stderr, form_pct_interval
+                        #Start loading all the forms by row now
+                        if all_forms:
+                            for form in all_forms:
+                                #-------------------------------------------------------------------------------------------------
+                                #   This block handles the AJAX progress calls before every form is processed
+                                #vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+                                
+                                form_pct_done = formtype_pct_done + (formCounter * form_pct_interval)
+                                form_pct_done = int(form_pct_done * 100) / 100.0
+                                #We re-initialize the progressData instance so it refreshes the values changed by the checkProgress() function
+                                progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                                progressData.jsonString = '{"percent_done":"'+str(form_pct_done)+'","current_formtype":"'+str(formtype.form_type_name)+'","is_complete":"False", "formtype_total":"'+str(total_formtypes)+'", "current_form":"'+str(form.form_name)+'", "total_forms":"'+str(total_forms)+'"}'
+                                progressData.is_complete = False
+                                #We want to make sure that our timer is set at 5 second itnervals. The AJAX script sets the keep alive variable to True
+                                #   --every 1 second. I've set it to 5 seconds here to account for any delays that might occur over the network.
+                                #   --Every 5 seconds, this script resets the keep_alive variable to 'False', if it is already False--that means the user exited
+                                #   --the process on their AJAX end so we should stop adding this to the database and delete what we've already done.
+                                #print >>sys.stderr, str(time.clock()) + "  - " + str(keepAliveTimer) + "    :    " + str(progressData.keep_alive)
+                                if time.clock() - keepAliveTimer > 5:
+                                    print >> sys.stderr, str (time.clock() - keepAliveTimer) + "  : We are at the 5 second interval!  " + str(formCounter) 
+                                    #restart the keepAlive timer to the current time
+                                    keepAliveTimer = time.clock()
+                                    #delete the data if the user's AJAX end is unresponsive
+                                    if progressData.keep_alive == False:
+                                        print >> sys.stderr, "We are deleting our progress now--wish us luck!"
+                                        #TODO Delete all formtypes FRAT/FRRTs  that we just tried making
+                                        progressData.delete()
+                                        #break from loop
+                                        print >>sys.stderr, "Breaking from export function--user/client was unresponsive"
+                                        ERROR_MESSAGE = "Breaking from export function--user/client was unresponsive"
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+                                    else:
+                                        progressData.keep_alive = False
+                                progressData.save()
+                                formCounter += 1
+                                
+                                # End of AJAX Progress processing for this iteration
+                                #-------------------------------------------------------------------------------------------------
+                                
+                                new_row = {'Form Name':form.form_name,'Form PK':str(form.pk),'Form Type Parent':formtype.form_type_name,'Form Type Parent PK':str(formtype.pk),}
+                                #now load all the FRAVs
+                                if all_FRATs:
+                                    for FRAT in all_FRATs:
+                                        currentFRAV = FRAT.formrecordattributevalue_set.all().filter(form_parent__pk=form.pk)
+                                        if currentFRAV.exists():
+                                            currentFRAV = currentFRAV[0]
+                                            new_row[FRAT.record_type] = currentFRAV.record_value
+                                        else:
+                                            new_row[FRAT.record_type] = ""
+                                if all_FRRTs:
+                                    #now load all the FRRVs
+                                    for FRRT in all_FRRTs:
+                                        currentFRRV = FRRT.formrecordreferencevalue_set.all().filter(form_parent__pk=form.pk)
+                                        if currentFRRV.exists():
+                                            if currentFRRV[0].record_reference.all().exists():
+                                                allLabels = ""
+                                                allPKs = ""
+                                                for ref in currentFRRV[0].record_reference.all():
+                                                    allPKs += '"' +str(ref.pk) + ","
+                                                    allLabels += ref.form_name + ","
+                                                new_row[FRRT.record_type] = allLabels
+                                                new_row[FRRT.record_type+'__PKs'] = allPKs
+                                            else:
+                                                #Add a blank PK list and use the external key for the label list
+                                                new_row[FRRT.record_type] = currentFRRV[0].external_key_reference
+                                                new_row[FRRT.record_type+'__PKs'] = ""
+                                        else:
+                                            new_row[FRRT.record_type] = ""
+                                            new_row[FRRT.record_type+'__PKs'] = ""
+                                formtype_dict.append(new_row)
+                        all_dicts.append(formtype_dict)
+                        
+                    
+                    print >>sys.stderr, str(len(all_dicts)) +  "    "  + str(all_dicts[0])
+                    #End our AJAX MEssaging
+                    progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                    progressData.jsonString = '{"percent_done":"100","current_formtype":"None","is_complete":"True", "formtype_total":"1", "current_form":"None", "total_forms":"None"}'
+                    progressData.is_complete = True;
+                    progressData.save();
+                    
+                    #Return the data as the specified format
+                    if request.POST['export_format'] == "CSV":
+                        #for each dict, let's make a list of CSV files
+                        csv_file_list = []
+                        for csv_dict in all_dicts:
+                            keys = csv_dict[0].keys()
+                            csv_file = io.BytesIO()
+                            csv_writer = csv.DictWriter(csv_file, fieldnames=keys)
+                            csv_writer.writerow(dict((fn,fn) for fn in keys))
+                            csv_writer.writerows(csv_dict)
+                            csv_file_list.append(csv_file)
+                            if len(csv_dict) > 0:
+                                print >>sys.stderr, str(len(csv_file_list)) + "   "  + csv_dict[0]['Form Type Parent']
+                            else:
+                                print >>sys.stderr, str(len(csv_file_list)) + "   "  + str(csv_dict)
+                        zipped_file = io.BytesIO()
+                        with contextlib.closing(zipfile.ZipFile(zipped_file, 'w')) as f:#TODO We need contextlin() here for py2.6 to 'close' the file. We can remove contextlib() and leave the rest as is for later python versions
+                            for i, file in enumerate(csv_file_list):
+                                print >>sys.stderr, str(file)
+                                f.writestr("{0}__.csv".format(i), file.getvalue())
+                        zipped_file.seek(0)
+                        response = HttpResponse(zipped_file, mimetype='application/x-zip-compressed')
+                        response['Content-Disposition'] = 'attachment; filename="'+project.name+'__'+request.user.username+'.zip"'
+                        progressData.jsonString = '{"row_index":"100","is_complete":"True", "row_total":"100"}'
+                        progressData.is_complete = True
+                        progressData.save()
+                        return response
+                    elif request.POST['export_format'] == "JSON":
+                        #for each dict, let's make a list of JSON files
+                        json_file_list = []
+                        for json_dict in all_dicts:
+                            json_file = io.BytesIO(json.dumps(json_dict))
+                            json_file_list.append(json_file)
+                        zipped_file = io.BytesIO()
+                        with contextlib.closing(zipfile.ZipFile(zipped_file, 'w')) as f:#TODO We need contextlin() here for py2.6 to 'close' the file. We can remove contextlib() and leave the rest as is for later python versions
+                            for i, file in enumerate(json_file_list):
+                                print >>sys.stderr, str(file)
+                                f.writestr("{0}__.json".format(i), file.getvalue())
+                        zipped_file.seek(0)
+                        response = HttpResponse(zipped_file, mimetype='application/x-zip-compressed')
+                        response['Content-Disposition'] = 'attachment; filename="'+project.name+'__'+request.user.username+'.zip"'
+                        progressData.jsonString = '{"row_index":"100","is_complete":"True", "row_total":"100"}'
+                        progressData.is_complete = True
+                        progressData.save()
+                        return response                  
+
+            else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+    
+
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  1    EXPORT_FORMTYPE()
+    #=======================================================#     
+    def export_formtype(self, request, **kwargs):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FormType pk value and returns a flattened .csv file export of all associated forms childed to this
+        #   --FormType in the project, or a JSON dump of the created Python Dictionary
+        #
+        #   The CSV file has the following columns:
+        #                                                                                   
+        #   -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- -- - - --- ----
+        #   |  Form_PK  |   Form_Name   |   FormType_PK |   FormType_Name   |  Att_Name_1 | Att_Name_2  |     Ref_Att_Name_1_PKs     | Ref_Att_Name_1_Labels | Reff Ref_Att_Name_2 | ...... ..... .....
+        #   ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- --   -- - --  --
+        #   |  000      |   Object A    |       000     |    Object Sheet   |  Att Value  |  Att Value  |  Val1_pk, Val2_pk, Val3_pk | Val1, Val2, Val3      |  .....  ....   .... ... . .. 
+        #
+        #   This is essentially a list of forms with column headings a direct 1:1 copy of FRATs. The FRRTs are a little more complex. Each FRRT is given in
+        #   --2 columns to provide both a comma separated list of referenced form names, and a comma seperated list of their database PK values. The names
+        #   --might be enough, but I like to have both for completion sake.
+        
+        
+        ERROR_MESSAGE = ""
+        print >> sys.stderr, request
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            formtype = FormType.objects.get(pk=request.POST['id'])
+            if formtype.project.pk == request.user.permissions.project.pk and formtype.flagged_for_deletion == False:
+
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"row_index":"0","row_total":"0","is_complete":"False","row_timer":"0"}')
+                progressData.save()                
+                keepAliveTimer = time.clock()
+            
+                csv_string = ""
+                all_forms = formtype.form_set.all().filter(flagged_for_deletion=False)
+                # Load all of our FRATs and FRRTs
+                all_FRATs = formtype.formrecordattributetype_set.all();
+                all_FRRTs = formtype.ref_to_parent_formtype.all();
+                
+                csv_dict = []
+              
+                formCounter = 0
+                total_forms = len(all_forms);
+                form_pct_interval = 100.0 / total_forms;
+                #Start loading all the forms by row now
+                if all_forms:
+                    for form in all_forms:
+                        #-------------------------------------------------------------------------------------------------
+                        #   This block handles the AJAX progress calls before every form is processed
+                        #vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+                        
+                        form_pct_done = formCounter * form_pct_interval
+                        form_pct_done = int(form_pct_done * 100) / 100.0
+                        #We re-initialize the progressData instance so it refreshes the values changed by the checkProgress() function
+                        progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                        progressData.jsonString = '{"percent_done":"'+str(form_pct_done)+'","current_formtype":"'+str(formtype.form_type_name)+'","is_complete":"False", "formtype_total":"1", "current_form":"'+str(form.form_name)+'", "total_forms":"'+str(total_forms)+'"}'
+                        progressData.is_complete = False
+                        #We want to make sure that our timer is set at 5 second itnervals. The AJAX script sets the keep alive variable to True
+                        #   --every 1 second. I've set it to 5 seconds here to account for any delays that might occur over the network.
+                        #   --Every 5 seconds, this script resets the keep_alive variable to 'False', if it is already False--that means the user exited
+                        #   --the process on their AJAX end so we should stop adding this to the database and delete what we've already done.
+                        print >>sys.stderr, str(time.clock()) + "  - " + str(keepAliveTimer) + "    :    " + str(progressData.keep_alive)
+                        if time.clock() - keepAliveTimer > 5:
+                            print >> sys.stderr, str (time.clock() - keepAliveTimer) + "  : We are at the 5 second interval!  " + str(formCounter) 
+                            #restart the keepAlive timer to the current time
+                            keepAliveTimer = time.clock()
+                            #delete the data if the user's AJAX end is unresponsive
+                            if progressData.keep_alive == False:
+                                print >> sys.stderr, "We are deleting our progress now--wish us luck!"
+                                #TODO Delete all formtypes FRAT/FRRTs  that we just tried making
+                                progressData.delete()
+                                #break from loop
+                                print >>sys.stderr, "Breaking from export function--user/client was unresponsive"
+                                ERROR_MESSAGE = "Breaking from export function--user/client was unresponsive"
+                                SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+                            else:
+                                progressData.keep_alive = False
+                        progressData.save()
+                        formCounter += 1
+                        
+                        # End of AJAX Progress processing for this iteration
+                        #-------------------------------------------------------------------------------------------------
+                         
+                    
+                        new_row = {'Form Name':form.form_name,'Form PK':str(form.pk),'Form Type Parent':formtype.form_type_name,'Form Type Parent PK':str(formtype.pk),}
+                        #now load all the FRAVs
+                        for FRAT in all_FRATs:
+                            currentFRAV = FRAT.formrecordattributevalue_set.all().filter(form_parent__pk=form.pk)
+                            if currentFRAV.exists():
+                                currentFRAV = currentFRAV[0]
+                                new_row[FRAT.record_type] = currentFRAV.record_value
+                            else:
+                                new_row[FRAT.record_type] = ""
+                        #now load all the FRRVs
+                        for FRRT in all_FRRTs:
+                            currentFRRV = FRRT.formrecordreferencevalue_set.all().filter(form_parent__pk=form.pk)
+                            if currentFRRV.exists():
+                                if currentFRRV[0].record_reference.all().exists():
+                                    allLabels = ""
+                                    allPKs = ""
+                                    for ref in currentFRRV[0].record_reference.all():
+                                        allPKs += '"' +str(ref.pk) + ","
+                                        allLabels += ref.form_name + ","
+                                    new_row[FRRT.record_type] = allLabels
+                                    new_row[FRRT.record_type+'__PKs'] = allPKs
+                                else:
+                                    #Add a blank PK list and use the external key for the label list
+                                    new_row[FRRT.record_type] = currentFRRV[0].external_key_reference
+                                    new_row[FRRT.record_type+'__PKs'] = ""
+                            else:
+                                new_row[FRRT.record_type] = ""
+                                new_row[FRRT.record_type+'__PKs'] = ""
+                        #remove the trailing comma after the last column heading and end the line
+                        csv_dict.append(new_row)
+                #End our AJAX MEssaging
+                progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                progressData.jsonString = '{"percent_done":"100","current_formtype":"None","is_complete":"True", "formtype_total":"1", "current_form":"None", "total_forms":"None"}'
+                progressData.is_complete = True;
+                progressData.save();                  
+                
+                if(request.POST['export_format'] == "CSV"):
+                    response = HttpResponse(content_type='text/csv')
+                    response['Content-Disposition'] = 'attachment; filename="'+formtype.form_type_name+'__'+request.user.username+'.csv"'
+                    keys = csv_dict[0].keys()
+                    csv_file = csv.DictWriter(response, fieldnames=keys)
+                    csv_file.writerow(dict((fn,fn) for fn in keys))
+                    csv_file.writerows(csv_dict)
+                    return response
+                elif (request.POST['export_format'] == "JSON"):
+                    jsonResponse = json.dumps(csv_dict)
+                    response = HttpResponse(jsonResponse, mimetype='application/json')
+                    response['Content-Disposition'] = 'attachment; filename="'+formtype.form_type_name+'__'+request.user.username+'.json"'
+                    return response
+                else:
+                    return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+                #SUCCESS!!
+                return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+            else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+    
+    
+    
+    
+    #-------------------------------------------------------------------------------------------------------
+    # RECYLING BIN ENDPOINTS
+
+    #=======================================================#
+    #   ACCESS LEVEL :  4     LOAD_RECYCLING_BIN()
+    #=======================================================#     
+    def load_recycling_bin(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #  Loads the recycling bin
+ 
+        ERROR_MESSAGE = ""
+        print >> sys.stderr, request
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                project = FormProject.objects.get(pk=request.POST['project_pk'])
+                if project.pk == request.user.permissions.project.pk:
+                    recycleBinJSON = {}
+                    recycledItems = []
+                    recycleBinJSON['recycled_items'] = recycledItems
+                    #First find all FormTypes that are flagged and add them to the list
+                    recycledFormTypes = FormType.objects.all().filter(project__pk=project.pk, flagged_for_deletion=True)
+                    for formType in recycledFormTypes:
+                        currentItem = {}
+                        currentItem['item_pk'] = formType.pk
+                        currentItem['item_label'] = formType.form_type_name
+                        currentItem['item_type'] = "FTYPE"
+                        currentItem['date_deleted'] = str(formType.date_last_modified)
+                        recycledItems.append(currentItem);
+                        
+                    #Find all recycled Forms WITHOUT FormType parents that are also recycled(We don't want to list Forms of recycled FormTypes)
+                    recycledForms = Form.objects.all().filter(project__pk=project.pk, flagged_for_deletion=True, form_type__flagged_for_deletion=False)
+                    for form in recycledForms:
+                        currentItem = {}
+                        currentItem['item_pk'] = form.pk
+                        currentItem['item_label'] = form.form_name
+                        currentItem['item_type'] = "FORM"
+                        currentItem['parent_form_type'] = form.form_type.form_type_name
+                        currentItem['date_deleted'] = str(form.date_last_modified)
+                        
+                        recycledItems.append(currentItem);      
+
+                    #Find all recycled FRATS without FormType parents that are also recycled
+                    recycledFRATs = FormRecordAttributeType.objects.all().filter(project__pk=project.pk, flagged_for_deletion=True, form_type__flagged_for_deletion=False)
+                    for FRAT in recycledFRATs:
+                        currentItem = {}
+                        currentItem['item_pk'] = FRAT.pk
+                        currentItem['item_label'] = FRAT.record_type
+                        currentItem['item_type'] = "FRAT"
+                        currentItem['parent_form_type'] = FRAT.form_type.form_type_name
+                        currentItem['date_deleted'] = str(FRAT.date_last_modified)
+                        
+                        recycledItems.append(currentItem);   
+                    #Find all recycled FRATS without FormType parents that are also recycled
+                    recycledFRRTs = FormRecordReferenceType.objects.all().filter(project__pk=project.pk, flagged_for_deletion=True, form_type_parent__flagged_for_deletion=False)
+                    for FRRT in recycledFRRTs:
+                        currentItem = {}
+                        currentItem['item_pk'] = FRRT.pk
+                        currentItem['item_label'] = FRRT.record_type
+                        currentItem['item_type'] = "FRRT"
+                        currentItem['parent_form_type'] = FRRT.form_type_parent.form_type_name
+                        currentItem['date_deleted'] = str(FRRT.date_last_modified)
+                        
+                        recycledItems.append(currentItem); 
+                    
+                    jsonResponse = json.dumps(recycleBinJSON)
+                    #SUCCESS!!
+                    return HttpResponse(jsonResponse,content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+        
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  4     RECYCLE_FORM_TYPE()
+    #=======================================================#     
+    def recycle_form_type(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FormType pk value and flags it for the recycling bin so it no longer is shown--hidden from all
+        #   --all queries and access until restored by a level 5 access privilege user. It allows for the temporary deletion of 
+        #   --'deletion' of database items, but allows for them to be restored effectively like an 'undo' button
+        #
+        #   This also loops through all childed Forms of the FormType and flags them for recycling. There is no need to flag the childed
+        #   --FRATs or FRRTs, because no endpoint or query will allow them to be accessed without their parent Form or FormType requesting them.
+        #   --They can be individually flagged, but there is no need to flag them here.
+ 
+        ERROR_MESSAGE = ""
+        print >> sys.stderr, request
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                formtype = FormType.objects.get(pk=request.POST['ID'])
+                if formtype.project.pk == request.user.permissions.project.pk:
+                    formtype.flagged_for_deletion = True
+                    formtype.save()
+                    #now flag all of its chlidren forms
+                    childForms = formtype.form_set.all()
+                    #Load all forms into cache with a single database hit
+                    if childForms:
+                        for aForm in childForms:
+                            aForm.flagged_for_deletion = True
+                            aForm.save()
+                        
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+        
+    #=======================================================#
+    #   ACCESS LEVEL :  3     RECYCLE_FORM()
+    #=======================================================#        
+    def recycle_form(self, request):
+        #***************#
+        ACCESS_LEVEL = 3
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a Form pk value and flags it for the recycling bin so it no longer is shown--hidden from all
+        #   --all queries and access until restored by a level 5 access privilege user. It allows for the temporary deletion of 
+        #   --'deletion' of database items, but allows for them to be restored effectively like an 'undo' button
+        #
+        #
+        #   There is no need to flag its childed FRAVs or FRRVs because they can't be accessed without this form 
+        #   --requesting access to them
+        #
+        #   !!TODO!! It may be possible to query them still in the query tools--I'll have to check if their parent Form
+        #   --limits the django filters. If not, then we will need to loop through all the rvals and turn their recycle
+        #   --flags on.    !!!!!Upon further investigation--it would appear they ARE limited by their Form parent, so let's ignore this.
+        #                  !!!!!    --but a little more investigation could be ncessary, so let's leave this open ended for now
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                form = Form.objects.get(pk=request.POST['ID'])
+                if form.project.pk == request.user.permissions.project.pk:
+                    form.flagged_for_deletion = True
+                    form.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+       
+    #=======================================================#
+    #   ACCESS LEVEL :  3     RECYCLE_FRAT()
+    #=======================================================#        
+    def recycle_frat(self, request):
+        #***************#
+        ACCESS_LEVEL = 3
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FormRecordAttributeType pk value and flags it for the recycling bin so it no longer is shown--hidden from all
+        #   --all queries and access until restored by a level 5 access privilege user. It allows for the temporary deletion of 
+        #   --'deletion' of database items, but allows for them to be restored effectively like an 'undo' button
+        #
+        #   No need to worry about the childed FRAVs because they shouldn't be loaded with the Form without a FRAT anyway.
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                frat = FormRecordAttributeType.objects.get(pk=request.POST['ID'])
+                if frat.project.pk == request.user.permissions.project.pk:
+                    frat.flagged_for_deletion = True
+                    frat.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+
+    #=======================================================#
+    #   ACCESS LEVEL :  3     RECYCLE_FRRT()
+    #=======================================================#        
+    def recycle_frrt(self, request):    
+        #***************#
+        ACCESS_LEVEL = 3
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FormRecordReferenceType pk value and flags it for the recycling bin so it no longer is shown--hidden from all
+        #   --all queries and access until restored by a level 5 access privilege user. It allows for the temporary deletion of 
+        #   --'deletion' of database items, but allows for them to be restored effectively like an 'undo' button
+        #
+        #   No need to worry about the childed FRRVs because they shouldn't be loaded with the Form without a FRAT anyway.
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                frrt = FormRecordReferenceType.objects.get(pk=request.POST['ID'])
+                if frrt.project.pk == request.user.permissions.project.pk:
+                    frrt.flagged_for_deletion = True
+                    frrt.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+ 
+    #=======================================================#
+    #   ACCESS LEVEL :  4     RESTORE_FORM_TYPE()
+    #=======================================================#     
+    def restore_form_type(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FormType pk value and flags it for restoring from the recycling bin. It essentially 'undo's the object
+        #   --and restores it to its previous state.
+        #
+        #   This also loops through all childed Forms of the FormType and flags them for restoration. There is no need to flag the childed
+        #   --FRATs or FRRTs, because they are left untouched by the recycling endpoint
+ 
+        ERROR_MESSAGE = ""
+        print >> sys.stderr, request
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                formtype = FormType.objects.get(pk=request.POST['ID'])
+                if formtype.project.pk == request.user.permissions.project.pk:
+                    formtype.flagged_for_deletion = False
+                    formtype.save()
+                    #now flag all of its chlidren forms
+                    childForms = formtype.form_set.all()
+                    #Load all forms into cache with a single database hit
+                    if childForms:
+                        for aForm in childForms:
+                            aForm.flagged_for_deletion = False
+                            aForm.save()
+                        
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+        
+    #=======================================================#
+    #   ACCESS LEVEL :  4     RESTORE_FORM()
+    #=======================================================#        
+    def restore_form(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a Form pk value and flags it for restoring from the recycling bin. It essentially 'undo's the object
+        #   --and restores it to its previous state.
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                form = Form.objects.get(pk=request.POST['ID'])
+                if form.project.pk == request.user.permissions.project.pk:
+                    form.flagged_for_deletion = False
+                    form.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+        
+    #=======================================================#
+    #   ACCESS LEVEL :  4     RESTORE_FRAT()
+    #=======================================================#        
+    def restore_frat(self, request):
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FRAT pk value and flags it for restoring from the recycling bin. It essentially 'undo's the object
+        #   --and restores it to its previous state.
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                frat = FormRecordAttributeType.objects.get(pk=request.POST['ID'])
+                if frat.project.pk == request.user.permissions.project.pk:
+                    frat.flagged_for_deletion = False
+                    frat.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+
+    #=======================================================#
+    #   ACCESS LEVEL :  4     RESTORE_FRRT()
+    #=======================================================#        
+    def restore_frrt(self, request):    
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint takes a FRRT pk value and flags it for restoring from the recycling bin. It essentially 'undo's the object
+        #   --and restores it to its previous state.
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                frrt = FormRecordReferenceType.objects.get(pk=request.POST['ID'])
+                if frrt.project.pk == request.user.permissions.project.pk:
+                    frrt.flagged_for_deletion = False
+                    frrt.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+        
+
+    #-------------------------------------------------------------------------------------------------------
+    # MODEL DELETION ENDPOINTS
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  5     DELETE_FORM_TYPE()
     #=======================================================#        
     def delete_form_type(self, request):
         #***************#
-        ACCESS_LEVEL = 4
+        ACCESS_LEVEL = 5
         #***************#  
         
         #----------------------------------------------------------------------------------------------------------------------------
@@ -266,11 +1038,11 @@ class MyAdminSite(AdminSite):
 
         
     #=======================================================#
-    #   ACCESS LEVEL :  3     DELETE_FORM()
+    #   ACCESS LEVEL :  5     DELETE_FORM()
     #=======================================================#        
     def delete_form(self, request):
         #***************#
-        ACCESS_LEVEL = 3
+        ACCESS_LEVEL = 5
         #***************#  
         
         #----------------------------------------------------------------------------------------------------------------------------
@@ -296,11 +1068,11 @@ class MyAdminSite(AdminSite):
 
         
     #=======================================================#
-    #   ACCESS LEVEL :  3     DELETE_FRAT()
+    #   ACCESS LEVEL :  5     DELETE_FRAT()
     #=======================================================#        
     def delete_frat(self, request):
         #***************#
-        ACCESS_LEVEL = 3
+        ACCESS_LEVEL = 5
         #***************#  
         
         #----------------------------------------------------------------------------------------------------------------------------
@@ -326,11 +1098,11 @@ class MyAdminSite(AdminSite):
 
         
     #=======================================================#
-    #   ACCESS LEVEL :  3     DELETE_FRRT()
+    #   ACCESS LEVEL :  5     DELETE_FRRT()
     #=======================================================#        
     def delete_frrt(self, request):    
         #***************#
-        ACCESS_LEVEL = 3
+        ACCESS_LEVEL = 5
         #***************#  
         
         #----------------------------------------------------------------------------------------------------------------------------
@@ -354,7 +1126,41 @@ class MyAdminSite(AdminSite):
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
  
-
+    #=======================================================#
+    #   ACCESS LEVEL :  4     DELETE_FORM_TYPE_GROUP()
+    #=======================================================#        
+    def delete_form_type_group(self, request):    
+        #***************#
+        ACCESS_LEVEL = 4
+        #***************#  
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This endpoint deletes a form type group -- we don't need to worry about recycling these because they don't take much
+        #   --effort to recreate; they are just arbitrary labels
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            if request.method == 'POST':    
+                ftg = FormTypeGroup.objects.get(pk=request.POST['ID'])
+                if ftg.project.pk == request.user.permissions.project.pk:
+                    ftg.delete()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                else: ERROR_MESSAGE += "Error: You are attempting to access another project's data!"            
+            else: ERROR_MESSAGE += "Error: You are trying to access the API without using a POST request."
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying form type information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")       
+ 
+ 
+    #-------------------------------------------------------------------------------------------------------
+    # MODEL MODIFICATION ENDPOINTS
+    
+    
     #=======================================================#
     #   ACCESS LEVEL :  4     CREATE_NEW_FORM_TYPE_TEMPLATE()
     #=======================================================#        
@@ -458,7 +1264,7 @@ class MyAdminSite(AdminSite):
                     #If it's a new group
                     if post_data.get('ft_group') == 'NEW':
                         #Create a new formtype group 
-                        newFormTypeGroup = FormTypeGroup(name=post_data.get('ft_group_new'), project=newFormType.project)
+                        newFormTypeGroup = FormTypeGroup(name=request.POST['ft_group_new'], project=newFormType.project)
                         #Add the user information - We only set created by in endpoints that create the model for the first time
                         newFormTypeGroup.created_by = request.user
                         newFormTypeGroup.modified_by = request.user
@@ -469,7 +1275,7 @@ class MyAdminSite(AdminSite):
                         newFormType.form_type_group = None
                     #Otherwise it's not a new group and not being removed so use the provided value
                     else:
-                        newFormType.form_type_group = FormTypeGroup.objects.get(pk=post_data.get('ft_group'))
+                        newFormType.form_type_group = FormTypeGroup.objects.get(pk=request.POST['ft_group'])
                         print >>sys.stderr, "WTF!!!!   " + post_data.get('ft_group')
 
                         #update the formtypes status as hierarchical
@@ -645,6 +1451,7 @@ class MyAdminSite(AdminSite):
                                         #Add the user information
                                         currentAttributeType.modified_by = request.user
                                         currentAttributeType.save()
+                                        
                                 if len(splitKey) == 3: 
                                     code,type_pk,instruction = splitKey
                                     #If we are creating a new attribute type
@@ -667,9 +1474,10 @@ class MyAdminSite(AdminSite):
                                         #Should I go ahead and add a null attribute value?
                                     #If we are getting an instruction from the user to delete this attribute type then delete it
                                     elif code== "frat" and instruction == "DEL":
-                                        #Django will "DELETE CASCADE" autmoatically this object and take care of deleting
-                                        #all the FormRecordAttributeValues that are attached to it in a ForeignKey
-                                        FormRecordAttributeType.objects.get(pk=type_pk).delete()
+                                        #*** RECYCLING BIN ***  pass this FRAT to the recycling bin
+                                        recycledFRAT = FormRecordAttributeType.objects.get(pk=type_pk)
+                                        recycledFRAT.flagged_for_deletion = True
+                                        recycledFRAT.save();
                                     #--------------------------------------------------------------------------------------------------------------
                                     #If we're converting an attribute type into the form number, we'll do that here with the proper instruction
                                     #--------------------------------------------------------------------------------------------------------------
@@ -748,7 +1556,9 @@ class MyAdminSite(AdminSite):
                                     if code== "frrt" and instruction == "DEL":
                                         #Django will "DELETE CASCADE" autmoatically this object and take care of deleting
                                         #all the FormRecordReferenceValues that are attached to it in a ForeignKey
-                                        FormRecordReferenceType.objects.get(pk=type_pk).delete()    
+                                        recycledFRRT = FormRecordReferenceType.objects.get(pk=type_pk)
+                                        recycledFRRT.flagged_for_deletion = True
+                                        recycledFRRT.save()
                             #----------------------------------------------------------------------------------------
                             #  CHECK FOR ANY FLAGGED RECORD ATTRIBUTE TYPES TO BE CONVERTED TO REFERENCE TYPES
                             #       OR IF THERE ARE ANY REF TYPES THAT NEED TO BE REFRESHED/CHANGED
@@ -782,7 +1592,7 @@ class MyAdminSite(AdminSite):
                                     #Now convert the Record Attribute Type Values attached to this Record Attribute Type to Record Reference Values
                                     #--tied to the newly created Record Reference Type
                                     for thisFRAV in FormRecordAttributeValue.objects.filter(record_attribute_type=thisFRAT):
-                                        logging.info(str(thisFRAV) + " <--FRAV  :  FRAT--> " + str(thisFRAT))
+                                        #logging.info(str(thisFRAV) + " <--FRAV  :  FRAT--> " + str(thisFRAT))
                                         newFRRV = FormRecordReferenceValue()
                                         newFRRV.external_key_reference = thisFRAV.record_value
                                         newFRRV.form_parent = thisFRAV.form_parent
@@ -812,6 +1622,8 @@ class MyAdminSite(AdminSite):
                                         newFRRV.save()
                                     #Now delete all old attributes
                                     #--This should delete all attached values as well because they follow the on_delete.CASCADE direction in models.py
+                                    #--This we DO delete permanently, because it's being converted to another model in the system--no point in recycling it because it can be
+                                    #--re-converted back to a FRAT later
                                     thisFRAT.delete()
                                     #We also need to add the post data key to the deletedObjects Dict() do they aren't used by this script later
                                     #--in the event that the frat__pk  key is after this  post_value key in the dictionary iterations
@@ -894,8 +1706,12 @@ class MyAdminSite(AdminSite):
                                         newFRAV.created_by = FRRV.created_by
                                         #Save our new FormRecordAttributeValue, and delete our old FormRecordReferenceValue
                                         newFRAV.save()
+                                        #--This we DO delete permanently, because it's being converted to another model in the system--no point in recycling it because it can be
+                                        #--re-converted back to a FRRV later
                                         FRRV.delete()
                                     #Once this loop is finished, make sure we delete the old FormRecordReferenceType as well
+                                    #--This we DO delete permanently, because it's being converted to another model in the system--no point in recycling it because it can be
+                                    #--re-converted back to a FRRT later
                                     oldFRRT.delete()
                                     #Add the FRRT to our garbage pile as well
                                     deletedObjects['frrt__'+type_pk+"__ref"] = None  
@@ -950,8 +1766,412 @@ class MyAdminSite(AdminSite):
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
+
+
+   #========================================================#
+    #   ACCESS LEVEL :  4      RUN_GEOJSON_IMPORTER()
+    #=======================================================#       
+    def run_geojson_importer(self, request):
+        #******************************************#
+        ACCESS_LEVEL = 4
+        PROJECT = request.user.permissions.project
+        #******************************************#   
         
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        # This API Endpoint takes an argument for a gejson file and creates a new formtype for the data. #Coded this on board a plane to Chicago--
+        #   --first written out on paper at the classy PHL airport over 2 well-deserved Golden Monkey Ales. Geojson is a standardized format of
+        #   --geospatial and associated meta data(attribute data). This will need some tinkering I expect, but 'should' work with a few adjustments
+        #   --Also--surprisingly I figured this out in ~30 lines of code which is pretty impressive if I do say so myself.
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests        
+            if request.method == 'POST':        
+                print >>sys.stderr, "Starting"
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"row_index":"0","row_total":"0","is_complete":"False","row_timer":"0"}')
+                progressData.save()
                 
+                listOfFRATS = {}
+                geojson = request.POST['geojson']
+                geojson = json.loads(geojson)
+                print >>sys.stderr, "json Loaded"
+                
+                #create the new formtype
+                newFormtype = FormType()
+                newFormtype.form_type_name = geojson['name']
+                newFormtype.geojson_projection = json.dumps(geojson['crs'])
+                newFormtype.project = PROJECT
+                newFormtype.type = 0
+                newFormtype.save()
+                
+                totalFeatures = len(geojson['features'])
+                featureCounter = 0
+                counterIncrement = 100.0 / totalFeatures #0.00135
+                
+                startTimer = time.clock()
+                endTimer = time.clock()
+                for aFeature in geojson['features']:
+                    #get current percentage of completion
+                    endTimer = time.clock()
+                    
+                    #print >>sys.stderr, "New Form   : " + str(featureCounter) + " out of " +str(totalFeatures)+ "  rows finished!   " + str(counterIncrement)
+                    progressData.jsonString = '{"row_index":"'+str(featureCounter)+'","is_complete":"False", "row_timer":"'+str(endTimer-startTimer)+'", "row_total":"'+str(totalFeatures)+'", "percent_done":"'+str(int(featureCounter*counterIncrement))+'"}'
+                    progressData.is_complete = False
+                    progressData.save()
+                    startTimer = time.clock()
+                    featureCounter += 1
+                    
+                    newForm = Form()
+                    newForm.form_geojson_string = json.dumps(aFeature['geometry'])
+                    print >>sys.stderr, str(newForm.form_geojson_string)
+                    newForm.form_type = newFormtype
+                    newForm.save()
+                    for att_label, att_value in aFeature['properties'].iteritems():
+                        #print >> sys.stderr, str(att_label) + "  : "  + str(att_value)
+                        #check if the current attribute is our specified form ID
+                        if att_label in request.POST:
+                            #print >>sys.stderr, "Found our Label! ^^^^^^^^" + str(att_value) + "  :  " +  aFeature['properties'][att_label]
+                            newForm.form_name = str(att_value)
+                            newForm.save()
+                        else:
+                        #Otherwise let's makes FRATs for the formtype
+                            if att_label in listOfFRATS:
+                                #the FRAT already exists so set our current FRAT to the one that matches
+                                newFRAT = FormRecordAttributeType.objects.get(pk=listOfFRATS[att_label])
+                            else:
+                                #it's a new attribute type(so we're in the first loop iteration)
+                                newFRAT = FormRecordAttributeType()
+                                newFRAT.record_type = att_label
+                                newFRAT.form_parent = newForm
+                                newFRAT.form_type = newFormtype
+                                newFRAT.order_number = random.randint(1, 999)
+                                newFRAT.save()
+                                listOfFRATS[att_label] = newFRAT.pk
+                            #Make the FRAV for our new form
+                            newFRAV = FormRecordAttributeValue()
+                            newFRAV.record_value = str(att_value)
+                            newFRAV.record_attribute_type = newFRAT
+                            newFRAV.form_parent = newForm
+                            newFRAV.save()
+                progressData.jsonString = '{"row_index":"'+str(featureCounter)+'","is_complete":"True", "row_total":"'+str(totalFeatures)+', "percent_done":"100"}'
+                progressData.is_complete = True
+                progressData.save()
+                return HttpResponse('{"MESSAGE":"Finished the import!"}',content_type="application/json")    
+                
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
+
+      
+
+        
+   #========================================================#
+    #   ACCESS LEVEL :  4      RUN_NEW_RTYPE_IMPORTER()
+    #=======================================================#       
+    def run_new_rtype_importer(self, request):
+        #******************************************#
+        ACCESS_LEVEL = 4
+        PROJECT = request.user.permissions.project
+        #******************************************#   
+        
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        # This API Endpoint takes an argument for a CSV file, HttpContext(e.g. context kwargs passed to the HttpResponse like pk values)........................
+
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests        
+            if request.method == 'POST':        
+        
+               
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"row_index":"0","row_total":"0","is_complete":"False","row_timer":"0"}')
+                progressData.save()
+                
+                #kwargs.update({'uuid':progressData.pk})
+                
+                post_data = request.POST
+                
+                
+                #timerA = time.clock()
+                #print >>sys.stderr, "Starting Clock: " + str(timerA)
+                #Make sure we escape the newline characters from the json string--jscript didn't do it automatically when concatenating the rows together in the clinet-side script
+                #We also have to replace all \t 's  in the json strings before loading them because JSON doesn't allow literal TABS --we need to escape them with a "\\"
+                print >> sys.stderr, post_data.get('csv_json').encode('utf-8').replace('\t', '\\t').replace('\r', '\\r').replace('\n', '\\n')
+                csv_json = json.loads(post_data.get('csv_json').encode('utf-8').replace('\t', '\\t').replace('\r', '\\r').replace('\n', '\\n'))
+                
+                print >> sys.stderr, post_data
+               
+                #setup Dictionaries for post import  self-referential needs
+                #setup a dict for hierarchy value
+                hierarchyDict = {}
+                #setup a recordreferencevalue dictionary for the form type if a particular reference is self-referencing to this same form type
+                selfReferenceList = []
+                
+                #Get our current FormType
+                currentFormType = FormType.objects.all().filter(project=request.user.permissions.project, pk=request.POST['formtype_pk'])[0]
+                
+
+                #Each row in the CSV file represents a new 'Form' of the 'currentFormType'
+                #Let's make a 'row' counter to help with indexing through the CSV file
+                row_index = 0    
+                #Let's make an incremental counter for record type orders
+                order_counter = 1;
+                #I'm also going to make a List() of AttributeTypes/ReferenceTypes. This is done so that
+                #after 1 iteration of the importer loop, the reference types/ attribute types are already created. We
+                #don't need to create them for every row--so after the first row, we reference this list for the reference
+                # and attribute values
+                typeList = {}
+                
+                print >> sys.stderr, "Just making sure things are working still....where's the stop point?"
+                main_ID_Field = ""
+                keepAliveTimer = time.clock()
+                #print >>sys.stderr, "Starting row loop: " + str(timerB) + "   Time elapsed = " + str(timerB-timerA)
+                #For each row of the CSV
+                for row in csv_json:
+                    print >> sys.stderr, "222 Just making sure things are working still....where's the stop point?"
+                    timerBeginRow = time.clock()
+                    #print >>sys.stderr, "Starting a new row: " + str(timerBeginRow)
+                    #If we are past index '0' then let's continue with the rest of the importer
+
+                    
+                    #Let's get the main ID 
+                    if row_index == 0:
+                        for key, value in row.iteritems():
+                            if 'record__'+key+'__ismainID' in post_data:
+                                main_ID_Field = key
+                                break
+                                
+                    currentForm = Form.objects.all().filter(project=request.user.permissions.project, form_type=currentFormType, form_name=row[main_ID_Field])
+                    if currentForm.exists():
+                        currentForm = currentForm[0]
+                        
+                    else:
+                        print >>sys.stderr, "Skipping Form--Could not find form name:" + row[main_ID_Field]
+                        continue
+      
+                    for key, value in row.iteritems():
+                        print >>sys.stderr, key
+
+                        if key != main_ID_Field:
+
+                            #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD REFERENCE TYPE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                            #------------------------------------------------------------------------------------------------------------------------
+                            #Test if it is a reference type by checking the POST_DATA if 'record__(n)__isreference' exists
+                            #If it is a reference Type:
+                            if 'record__'+str(key)+'__isreference' in post_data:
+                                #We want to make sure we only create the ReferenceType's once--otherwise we populate the database with several 
+                                #unecessary copies and relations that muddy everything. So if we're past the first row/iteration of the JSON, the reference types are
+                                #already created and stored in a list to reference after
+                                if row_index < 1:
+                                    #create a new FormRecordReferenceType and set "record_type" variable to the header column user-given name value
+                                    newFormRecordReferenceType = FormRecordReferenceType()
+                                    newFormRecordReferenceType.project = PROJECT
+                                    newFormRecordReferenceType.is_public = False
+                                    newFormRecordReferenceType.record_type = post_data.get('record__'+str(key)+'__name')
+                                    #also set "form_type_parent" to the current formType we are importing
+                                    newFormRecordReferenceType.form_type_parent = currentFormType
+                                    #now set "form_type_reference" to the selected FormTypeReference value in the current importer Column
+                                    #if the value == 'default' then set reference to this same FormType
+                                    if post_data.get('record__'+str(key)+'__reftype') == 'default':
+                                        newFormRecordReferenceType.form_type_reference = currentFormType
+                                    #otherwise set it to the given pk value of a FormType object
+                                    else:
+                                        newFormRecordReferenceType.form_type_reference = FormType.objects.get(pk=post_data.get('record__'+str(key)+'__reftype'))
+                                    #Set an arbitrary initial order for the type
+                                    newFormRecordReferenceType.order_number = order_counter
+                                    order_counter += 1
+                                    #save the Record Reference Type
+                                    newFormRecordReferenceType.save()
+                                    #add it to the list so that the reference value can reference it
+                                    typeList[key] = newFormRecordReferenceType
+                                #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD REFERENCE VALUE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                                #-------------------------------------------------------------------------------------------------------------------------
+                                
+                                #If this form already has a FRRV for this importer(e.g. we are running multiple rows with the same ID) then just reference
+                                #   --that existing FRRV and add the new reference, as well as the ext_key
+                                possibleFRRV =  currentForm.ref_to_parent_form.all().filter(record_reference_type=typeList[key])
+                                if possibleFRRV.exists():
+                                    newFormRecordReferenceValue = possibleFRRV[0]
+                                    newFormRecordReferenceValue.external_key_reference += "," + value
+                                    newFormRecordReferenceValue.save()
+                                else:
+                                    #Create a new RecordReferenceValue
+                                    newFormRecordReferenceValue = FormRecordReferenceValue()
+                                    newFormRecordReferenceValue.project = PROJECT
+                                    newFormRecordReferenceValue.is_public = False
+                                    #set the "external_key_reference" to the column value of the csv row
+                                    newFormRecordReferenceValue.external_key_reference = value
+                                    #set the "form_parent" to the current row's Form
+                                    newFormRecordReferenceValue.form_parent = currentForm                              
+                                    #set the "record_reference_type" to the current RecordReferenceType
+                                    logging.info("line626      " + str(typeList[key].form_type_reference) + "           :: " + newFormRecordReferenceValue.external_key_reference)
+                                    newFormRecordReferenceValue.record_reference_type = typeList[key]
+                                    #save the value to give it a pk value
+                                    newFormRecordReferenceValue.save()
+                                #logging.info("We are about to check the reference for:    " + str(newFormRecordReferenceValue))
+                                #If this reference is self-referencing to the same form formtype we're importing, then similar to the hierchy references,
+                                #--we need to store a list of the reference value objects to load once the entire form type has been imported. We don't need key values because
+                                #--the external key reference is already saved for the lookup on the model.
+                                #--I'm using the objects rather pk values because that will save us time on SQL queries later
+                                if post_data.get('record__'+str(key)+'__reftype') == 'default':
+                                    selfReferenceList.append(newFormRecordReferenceValue)
+                                else:
+                                    #Now we need to set the value for "record_reference" which will involve a query 
+                                    #And since the external key could contain multiple values, we need to split them by the comma delimeter
+                                    #logging.info(newFormRecordReferenceValue.external_key_reference + "  : BEFORE SPLIT")
+                                    possibleRefValues = newFormRecordReferenceValue.external_key_reference.split(",")    
+                                    #logging.info(str(possibleRefValues) + "  : SPLIT")
+                                   
+                                    #clear our list of refs everytime to ensure we don't double add--it will use the ext key to find them
+                                    #   --this isn't the fastest way of doing this, but I need a quick fix for now !!!TODO
+                                    newFormRecordReferenceValue.record_reference.clear()
+                                    #for all forms in the selected FormType reference
+                                    for aForm in newFormRecordReferenceValue.record_reference_type.form_type_reference.form_set.all().prefetch_related():
+                                        #if the current external ID value == to the iterated forms "form_num"
+                                        #Make sure we convert the INT form-num to a STR first or it will fail the check
+
+                                        for refValue in possibleRefValues:
+                                            if refValue == str(aForm.form_number):
+                                                #remove this value from future matches to ensure we don't double add it
+                                                possibleRefValues.remove(refValue)
+                                                #set the current FormRecordReferenceValue.record_reference to the current form in the loop iteration
+                                                newFormRecordReferenceValue.record_reference.add(aForm)
+                                    #logging.info(newFormRecordReferenceValue.external_key_reference + "  : AFTER SPLIT") 
+                                #if there are no matches by the last iteration of the loop,
+                                #we can do nothing to leave the record_reference value as "None" (the user can set this later)
+                                #This might happen if the user is importing a new form type that references itself, or references
+                                #another form type that hasn't yet been imported. The external_key_reference's are still saved
+                                #so the user can run another tool to match these keys later once all the Form Types and forms have been
+                                #imported through this tool
+                                #save the RecordReferenceValue
+                                newFormRecordReferenceValue.save()    
+                                #timerE = time.clock()
+                                #print >>sys.stderr, "Ending ref lookup: " + str(timerE) + "   Time elapsed = " + str(timerE-timerD)    
+                            #If it is not a reference type, then we are adding an attribute type instead
+                            else:
+                                #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD ATTRIBUTE TYPE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                                #------------------------------------------------------------------------------------------------------------------------
+                                #We want to make sure we only create the AttributeType's once--otherwise we populate the database with several 
+                                #unecessary copies and relations that muddy everything. So if we're past the first row, the attribute types are
+                                #already created and stored in a list to reference after
+                                if row_index < 1:
+                                    #create a new FormRecordAttributeType and set "record_type" variable to the header column name
+                                    newFormRecordAttributeType = FormRecordAttributeType()
+                                    newFormRecordAttributeType.record_type = post_data.get('record__'+str(key)+'__name')
+                                    newFormRecordAttributeType.project = PROJECT
+                                    newFormRecordAttributeType.is_public = False
+                                    #also set "form_type" to the current formType we are importing
+                                    newFormRecordAttributeType.form_type = currentFormType
+                                    #Set an arbitrary initial order for the type
+                                    newFormRecordAttributeType.order_number = order_counter
+                                    order_counter += 1
+                                    #save the RecordAttributeType
+                                    newFormRecordAttributeType.save()
+                                    #add the attributeType to the typeList so that the attribute value can reference it
+                                    typeList[key] = newFormRecordAttributeType
+                                #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD Attribute VALUE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                                #-------------------------------------------------------------------------------------------------------------------------
+                                #If this form already has a FRRV for this importer(e.g. we are running multiple rows with the same ID) then just reference
+                                #   --that existing FRRV and add the new reference, as well as the ext_key
+                                possibleFRAV =  currentForm.formrecordattributevalue_set.all().filter(record_attribute_type=typeList[key])
+                                if possibleFRAV.exists():
+                                    newFormRecordAttributeValue = possibleFRAV[0]
+                                    newFormRecordAttributeValue.record_value = newFormRecordAttributeValue.record_value + "," + value
+                                    newFormRecordAttributeValue.save()
+                                else:                                
+                                    #Create a new RecordAttributeValue
+                                    newFormRecordAttributeValue = FormRecordAttributeValue()
+                                    newFormRecordAttributeValue.project = PROJECT
+                                    newFormRecordAttributeValue.is_public = False
+                                    #set the "record_value" to the column value of the csv row
+                                    newFormRecordAttributeValue.record_value = value
+                                    #set the "form_parent" to the current row's Form
+                                    newFormRecordAttributeValue.form_parent = currentForm
+                                    #set the "record_attribute_type" to the current RecordAttributeType
+                                    newFormRecordAttributeValue.record_attribute_type = typeList[key]
+                                    #save the RecordAttributeValue
+                                    newFormRecordAttributeValue.save()
+
+                    row_index += 1
+                    #Upload our progress data object with the current row
+                    timerFinishRow = time.clock()
+                    #print >>sys.stderr, "Ending a row: " + str(timerF) + "   Time elapsed since row start = " + str(timerF-timerC)
+                    #We need to update the progessData model because it is updated by another thread as well
+                    #--Otherwise this will just ignore the  'keep_alive' flag and quit after 2 timer checks
+                    #--I'm not entirely sold on this method--There's a slight....itty bitty...teensy weensy...chance that the other thread
+                    #--might be trying to update the AJAX model at the exact time and will be missed here--but as of now, I can't think of a
+                    #--better solution and I'm REALLY over working on this importer today.
+                    progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                    progressData.jsonString = '{"row_index":"'+str(row_index)+'","is_complete":"False","row_total":"'+post_data.get('row_total')+'","row_timer":"'+str(timerFinishRow-timerBeginRow)+'"}'
+
+                    #We want to make sure that our timer is set at 5 second itnervals. The AJAX script sets the keep alive variable to True
+                    #   --every 1 second. I've set it to 5 seconds here to account for any delays that might occur over the network.
+                    #   --Every 5 seconds, this script resets the keep_alive variable to 'False', if it is already False--that means the user exited
+                    #   --the process on their AJAX end so we should stop adding this to the database and delete what we've already done.
+                    #print >>sys.stderr, str(time.clock()) + "  - " + str(keepAliveTimer) + "    :    " + str(progressData.keep_alive)
+                    if time.clock() - keepAliveTimer > 5:
+                        print >> sys.stderr, str (time.clock() - keepAliveTimer) + "  : We are at the 5 second interval!  " + str(row_index) 
+                        #restart the keepAlive timer to the current time
+                        keepAliveTimer = time.clock()
+                        #delete the data if the user's AJAX end is unresponsive
+                        if progressData.keep_alive == False:
+                            print >> sys.stderr, "We are deleting our progress now--wish us luck!"
+                            #TODO Delete all formtypes FRAT/FRRTs  that we just tried making
+                            progressData.delete()
+                            #break from loop
+                            break
+                        else:
+                            progressData.keep_alive = False
+                    progressData.save()
+                #Now Update the hierchical references if they exist
+                #This forloop will only run if the hierarchyDict has been appended to already
+                for key, value in hierarchyDict.iteritems():
+                    formToModify  =  Form.objects.get(pk=key)
+                    try:#Essentially we are trying to grab the form with the given form_name. If no match is found--the TRY statement will leave it as NoneType
+                        formToModify.hierarchy_parent = Form.objects.all().filter(form_name=value)[0]
+                        #print >> sys.stderr, "Admin: Line 681: WHAT'S The Name?: " + formToModify.hierarchy_parent
+                        formToModify.save()
+                    except:
+                        print >>sys.stderr, "No Hierarchy Match found."
+                #Now Update the self references if they exist
+                #This forloop will only run if the selfReferenceList has been populated
+                for refValue in selfReferenceList:
+                    #Remember that some external key references may be multi-values that are comma seperated, so let's try splitting them by comma
+                    #--and looping through them appropriately
+                    key_list = refValue.external_key_reference.split(',')
+                    for aKey in key_list:
+                        try:#Essentially we are trying to grab the form with the given external ID by form_name. If no match is found--the TRY statement will leave it as NoneType
+                            refValue.record_reference.add(Form.objects.all().filter(form_name=aKey)[0])
+                            refValue.save()
+                        except:
+                            print >>sys.stderr, "No Ref Match found."
+                print >> sys.stderr, "333 Just making sure things are working still....where's the stop point?"   
+                #When we are fininshed, update the progressData to show that
+                progressData.jsonString = '{"row_index":"'+str(row_index)+'","is_complete":"True", "row_total":"'+post_data.get('row_total')+'"}'
+                progressData.is_complete = True
+                progressData.save()
+                
+                return HttpResponse('{"MESSAGE":"Finished the import!"}',content_type="application/json")    
+                
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
+
+        
     #=======================================================#
     #   ACCESS LEVEL :  4      RUN_FORM_TYPE_IMPORTER()
     #=======================================================#       
@@ -1080,7 +2300,7 @@ class MyAdminSite(AdminSite):
                 #print >>sys.stderr, "Starting row loop: " + str(timerB) + "   Time elapsed = " + str(timerB-timerA)
                 #For each row of the CSV
                 for row in csv_json:
-                    print >> sys.stderr, "222 Just making sure things are working still....where's the stop point?"
+                    #print >> sys.stderr, "222 Just making sure things are working still....where's the stop point?"
                     timerBeginRow = time.clock()
                     #print >>sys.stderr, "Starting a new row: " + str(timerBeginRow)
                     #If we are past index '0' then let's continue with the rest of the importer
@@ -1322,115 +2542,277 @@ class MyAdminSite(AdminSite):
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
 
-       
+                
     #=======================================================#
-    #   ACCESS LEVEL :  4      CHECK_PROGRESS()
-    #=======================================================#   
-    def check_progress(self, request):
-        #***************#
+    #   ACCESS LEVEL :  4      RUN_FORM_TYPE_FORM_IMPORTER()
+    #=======================================================#       
+    def run_form_type_form_importer(self, request):
+        #******************************************#
         ACCESS_LEVEL = 4
-        #***************#   
-
-        #----------------------------------------------------------------------------------------------------------------------------
-        #   This Endpoint just checks the progress of the submitted UUID Progress Object
-        #   --It's used by longer functions that require time on the server to process to keep the usser updated on the progress of their
-        #   --formtype generator submitted. Security isn't particularly important here, because the information provided isn't particularly sensitive,
-        #   --and this model/object doesn't have a foreign key to a project. It can only be accessed by a UUID(unique ID) provided by the user
-        #   --and the chance of someone figuring out a 32character long random string in the small amount of time it takes to process the server
-        #   --function is considerably low--and even if they DID manage to hack it, the information they recieve is essentially rubbish and offers
-        #   --no sensitive data except perhaps the name or label of some rtypes--and associated counts for the query. I suppose that could be
-        #   --potentially sensitive--but the security  risk is so low that I won't spend time worrying about it.
-        #   ----I'm adding an access level of 4 to this function however, because the only users who should have access to the tool that would request
-        #   ------this function are those with level 4 access. Not a huge security risk--but just because.
-        #
-        #   TODO: an option to secure this, is to attach a foreign key to the ProgressObject to the project in question. This Endpoint could then 
-        #       --cross check the session user's project and make sure they're only accessing progress objects that are part of their project. Once
-        #       --again--not a priority right now but I ahve it in a TODO tag for future edits when time is more available
+        PROJECT = request.user.permissions.project
+        #******************************************#   
         
-
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        # This API Endpoint takes an argument for a CSV file, HttpContext(e.g. context kwargs passed to the HttpResponse like pk values),
+        # -->and finally the POST data submitted by the formtype_form_importer view. It will match POST column header data customized by
+        # -->the user to columns in the CSV file and automatically generate, both a new FormType, and a new Form for each row of the
+        # -->CSV file with all the necessary RecordAttribute/ReferenceType's and Values
+        #
+        # *This function is for importing a separate CSV of "NEW" forms to an existing formtype with the same RTYPES in the header
+        #   --if the RTYPE doesn't exist, it will cease the import and delete everything it made upto that point
+        # *It uses a CSV file that has been converted into JSON of key:value pairs and passed as a POST argument
+        # *This is done as an AJAX request to show progresss of the database import
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        
+        #We have the column headers saved in a coded format in the passed POST header argument 'post_data'
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        # 
+        #
+        #   *Where (n) is the associated key value for the original header for each row of CSV data, e.g. if n == Object No, then the value in the csv file 
+        #   *row for the key "Object No" will match
+        # record__(n)__name         --> This represents the RecordAttribute/ReferenceType name field for the model
+        # record__(n)__reftype      --> This represents the RecordReferenceType referenced FormType is applicable
+        # record__(n)__ismainID     --> This is a fake Bool value. It either exists, which means this particular (n) column is to be used for the form_num/form_name field
+        #                               -->or it isn't added to the POST data because it wasn't selected and therefore does not exist, and therefore this particular column
+        #                               -->is a RecordAttributeType rather than a RecordReferenceType
+        # record__(n)__isreference  --> This is a fake Bool value. It either exists, which means the particular (n) column is to be treated as a RecordReferenceType
+        #                               -->or it isn't added to the POST data because it wasn't selected and therefore does not exist, and therefore this particular column
+        #                               -->is a RecordAttributeType rather than a RecordReferenceType
+        #
+        #-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        
+        
         ERROR_MESSAGE = ""
         
-        #Check our user's session and access level  
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):   
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests        
+            if request.method == 'POST':        
         
-            #Returns a JSON string to an AJAX request given a provided UUID   
-            try:
-                currentProcessObject = AJAXRequestData.objects.filter(uuid=request.GET['uuid'])[0]
-                print >>sys.stderr, "Keeping Alive?" 
-                currentProcessObject.keep_alive = True
-                currentProcessObject.save()
-                #If finished, then delete the process object
-                if currentProcessObject.is_finished:
-                    print >> sys.stderr, "DELETING OBJECT I GUESS?"
-                    currentProcessObject.delete()
-                currentJson = currentProcessObject.jsonString
-                #return the json response      
-                return HttpResponse(currentJson, content_type="application/json")  
-            except Exception as e:
-                print >>sys.stderr, "Whoops---hmmm....."
-                print >>sys.stderr, e
-                ERROR_MESSAGE += "Something happened during the check to the Progress Object--it might not have been created yet, and we are checking too quickly..."
-                     
+               
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"row_index":"0","row_total":"0","is_complete":"False","row_timer":"0"}')
+                progressData.save()
+                
+                #kwargs.update({'uuid':progressData.pk})
+                
+                post_data = request.POST
+                
+                
+                #timerA = time.clock()
+                #print >>sys.stderr, "Starting Clock: " + str(timerA)
+                #Make sure we escape the newline characters from the json string--jscript didn't do it automatically when concatenating the rows together in the clinet-side script
+                #We also have to replace all \t 's  in the json strings before loading them because JSON doesn't allow literal TABS --we need to escape them with a "\\"
+                #print >> sys.stderr, post_data.get('csv_json').encode('utf-8').replace('\t', '\\t').replace('\r', '\\r').replace('\n', '\\n')
+                print >>sys.stderr, request.POST['csv_json'][0:1000]
+                print >>sys.stderr, request.POST['csv_json'][7932427:7934427] + " : " + request.POST['csv_json'][7933427]
+                csv_json = json.loads(post_data.get('csv_json').encode('utf-8').replace('\t', '\\t').replace('\r', '\\r').replace('\n', '\\n'))
+                #response = HttpResponse(post_data.get('csv_json'), content_type='text/plain')
+                #response['Content-Disposition'] = 'attachment; filename="test__'+request.user.username+'.txt"'
+                #return response
+                #print >> sys.stderr, post_data
+               
+                #setup Dictionaries for post import  self-referential needs
+                #setup a dict for hierarchy value
+                hierarchyDict = {}
+                #setup a recordreferencevalue dictionary for the form type if a particular reference is self-referencing to this same form type
+                selfReferenceList = []
+                
+                currentFormType = FormType.objects.get(pk=request.POST['formtype_pk']);
+                
+                availableFRATs = currentFormType.formrecordattributetype_set.all()
+                availableFRRTs = currentFormType.ref_to_parent_formtype.all()
+                
+                #queue them up in memory
+                print >>sys.stderr, len(availableFRATs)
+                print >>sys.stderr, len(availableFRRTs)
+                
+                #Make a dictionary based with the RTYPE names and their objects as values
+                FRATs = {}
+                FRRTs = {}
+                
+                for frat in availableFRATs:
+                    FRATs[frat.record_type] = frat
+                for frrt in availableFRRTs:
+                    FRRTs[frrt.record_type] = frrt
+                print >>sys.stderr, FRATs    
+                # $$$SECURITY$$$ If the formtype requested is not part of this user's project, then exist immediately with a warning
+                if currentFormType.project.pk == PROJECT.pk:
+                
+                    #Let's keep track of all the forms we make to delete them all if anything goes wrong
+                    allNewForms = []
+                    
+                    #Each row in the CSV file represents a new 'Form' of the 'currentFormType'
+                    
+                    #Let's make a 'row' counter to help with indexing through the CSV file
+                    row_index = 0    
+                    
+                    #Let's make an incremental counter for record type orders
+                    order_counter = 1                   
+                    print >> sys.stderr, "Just making sure things are working still....where's the stop point?"
+                    keepAliveTimer = time.clock()
+                    try:
+                        #For each row of the CSV
+                        for row in csv_json:
+                            row_index += 1
+                            #print >> sys.stderr, "222 Just making sure things are working still....where's the stop point?"
+                            timerBeginRow = time.clock()
+                            #print >>sys.stderr, "Starting a new row: " + str(timerBeginRow)
+                            #If we are past index '0' then let's continue with the rest of the importer
+                            
+                            #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ CREATE NEW FORM @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                            #-----------------------------------------------------------------------------------------------------------
+                            #Create a new Form and attach the newly created 'FormType' to 'form_type' in the 'Form' model
+                            newForm = Form()
+                            newForm.form_type = currentFormType
+                            newForm.project = PROJECT
+                            newForm.is_public = False
+                            #we will worry about adding the form_name / form_number later
+                            #save the Form to give it a pk value in the database. Now we can use it for variable assignments later
+                            newForm.save()
+                            print >>sys.stderr, "NEW Form PK" + str(newForm.pk)
+                            #Add this form to our form list to delete if anything goes wrong
+                            allNewForms.append(newForm)
+                            
+                            col_index = 0
+                            
+                            #For each column in the CSV Row and the column headers (essentially all the dict/JSON key values
+                            #We setup a bool test to determine if we find a primary id that is selected or not.
+                            foundAMainID = False
+                            for key, value in row.iteritems():
+                                col_index += 1
+                                #timerJ = time.clock()
+                                #print >>sys.stderr, "Starting col loop: " + str(key) + " : " + str(value)
+                                #First check if this column is the unique ID for this form
+                                #we'll see if it is by checking the POST_DATA if 'record__(n)__ismainID' exists
+                                if 'record__'+str(key)+'__ismainID' in post_data:
+                                    print >>sys.stderr, "FOUND MAIN ID: " + key
+                                    #If it is, then add this column value to the current Form's  "form_name"
+                                    foundAMainID = True
+                                    newForm.form_name = value
+                                    #save the Form
+                                    newForm.save()
+                                
+                                #If it is not the ID field:
+                                else:
+                                    #Now we need to check if there is a matching FRAT with the attribute header name
+                                    try:
+                                        #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD Attribute VALUE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                                        #-------------------------------------------------------------------------------------------------------------------------
+                                        #Create a new RecordAttributeValue
+                                        currentKey = request.POST['record__'+str(key)+'__name']
+                                        #print >>sys.stderr, currentKey
+                                        newFormRecordAttributeValue = FormRecordAttributeValue()
+                                        newFormRecordAttributeValue.project = PROJECT
+                                        newFormRecordAttributeValue.is_public = False
+                                        #set the "record_value" to the column value of the csv row
+                                        newFormRecordAttributeValue.record_value = value
+                                        #set the "form_parent" to the current row's Form
+                                        newFormRecordAttributeValue.form_parent = newForm
+                                        #set the "record_attribute_type" to the current RecordAttributeType
+                                        newFormRecordAttributeValue.record_attribute_type = FRATs[currentKey]
+                                        #save the RecordAttributeValue
+                                        newFormRecordAttributeValue.save()                                   
+                                        
+                                    #If there isn't a matching FRAT, then look for a matching FRRT with the same header label
+                                    except:
+                                        try:
+                                            #@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  ADD A RECORD REFERENCE VALUE @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                                            #-------------------------------------------------------------------------------------------------------------------------
+                                            #Create a new RecordReferenceValue
+                                            newFormRecordReferenceValue = FormRecordReferenceValue()
+                                            newFormRecordReferenceValue.project = PROJECT
+                                            newFormRecordReferenceValue.is_public = False
+                                            #set the "external_key_reference" to the column value of the csv row
+                                            newFormRecordReferenceValue.external_key_reference = value
+                                            #set the "form_parent" to the current row's Form
+                                            newFormRecordReferenceValue.form_parent = newForm                              
+                                            #set the "record_reference_type" to the current RecordReferenceType
+                                            newFormRecordReferenceValue.record_reference_type = FRRTs[request.POST['record__'+str(key)+'__name']]
+                                            #store the references to other forms
+                                            possibleRefValues = newFormRecordReferenceValue.external_key_reference.split(",")  
+                                            #save the value to give it a pk value
+                                            newFormRecordReferenceValue.save()   
+                                            #if the current external ID value == to the iterated forms "form_num"
+                                            #Make sure we convert the INT form-num to a STR first or it will fail the check
+                                            for refValue in possibleRefValues:
+                                                possibleFormMatch = newFormRecordReferenceValue.record_reference_type.form_type_reference.form_set.filter(form_name=refValue)
+                                                if possibleFormMatch.exists():
+                                                    #remove this value from future matches to ensure we don't double add it
+                                                    possibleRefValues.remove(refValue)
+                                                    #set the current FormRecordReferenceValue.record_reference to the current form in the loop iteration
+                                                    #no need to resave because it is saved automatically with the add() command
+                                                    newFormRecordReferenceValue.record_reference.add(possibleFormMatch[0])                                   
 
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+                                            
+                                        #If there are no matches, escape early and delete all currently created forms.
+                                        except:
+                                            print >>sys.stderr, "QUITTING"
+                                col_index += 1                                                            
+                                
+                                #Upload our progress data object with the current row
+                                timerFinishRow = time.clock()
+                                #print >>sys.stderr, "Ending a row: " + str(timerF) + "   Time elapsed since row start = " + str(timerF-timerC)
+                                #We need to update the progessData model because it is updated by another thread as well
+                                #--Otherwise this will just ignore the  'keep_alive' flag and quit after 2 timer checks
+                                #--I'm not entirely sold on this method--There's a slight....itty bitty...teensy weensy...chance that the other thread
+                                #--might be trying to update the AJAX model at the exact time and will be missed here--but as of now, I can't think of a
+                                #--better solution and I'm REALLY over working on this importer today.
+                                progressData = AJAXRequestData.objects.get(pk=progressData.pk)
+                                progressData.jsonString = '{"row_index":"'+str(row_index)+'","is_complete":"False","row_total":"'+post_data.get('row_total')+'","row_timer":"'+str(timerFinishRow-timerBeginRow)+'"}'
+
+                                #We want to make sure that our timer is set at 5 second itnervals. The AJAX script sets the keep alive variable to True
+                                #   --every 1 second. I've set it to 5 seconds here to account for any delays that might occur over the network.
+                                #   --Every 5 seconds, this script resets the keep_alive variable to 'False', if it is already False--that means the user exited
+                                #   --the process on their AJAX end so we should stop adding this to the database and delete what we've already done.
+                                #print >>sys.stderr, str(time.clock()) + "  - " + str(keepAliveTimer) + "    :    " + str(progressData.keep_alive)
+                                if time.clock() - keepAliveTimer > 5:
+                                    print >> sys.stderr, str (time.clock() - keepAliveTimer) + "  : We are at the 5 second interval!  " + str(row_index) 
+                                    #restart the keepAlive timer to the current time
+                                    keepAliveTimer = time.clock()
+                                    #delete the data if the user's AJAX end is unresponsive
+                                    if progressData.keep_alive == False:
+                                        print >> sys.stderr, "We are deleting our progress now--wish us luck!"
+                                        #This needs to delete ONLY the forms that have been created. Every form created should be added to a temporary list
+                                        #   --for this to access and delete
+                                        for thisForm in allNewForms:
+                                            thisForm.delete()
+                                        progressData.delete()
+                                        #break from loop
+                                        ERROR_MESSAGE += "Client unresponsive, shutting down import."
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")   
+                                    else:
+                                        progressData.keep_alive = False
+                                progressData.save()
+                            #print >>sys.stderr, "End of col loop: " + str(timerK) + "   Time elapsed = " + str(timerK-timerJ)
+                            #If we didn't find a primary key for this row/form, then add the rox index as the incremental form name/number
+                            if foundAMainID == False:
+                                print "using alt ID Number"
+                                newForm.form_name = str(row_index+1)
+                                newForm.save()
+                                foundAMainID = False
+                            print >>sys.stderr, "NEW Form Name" + str(newForm.form_name)
+                        #When we are fininshed, update the progressData to show that
+                        progressData.jsonString = '{"row_index":"'+str(row_index)+'","is_complete":"True", "row_total":"'+post_data.get('row_total')+'"}'
+                        progressData.is_complete = True
+                        progressData.save()
+                        return HttpResponse('{"MESSAGE":"Finished the import!"}',content_type="application/json")    
+                    except Exception as e:
+                        print >>sys.stderr, "Something happened!!" + str(type(e)) + " : " + str(e.args) + " : " + str(e) 
+                        #Delete all forms in the allFormsList
+                        for thisForm in allNewForms:
+                            thisForm.delete()
+                            print >>sys.stderr, "Something happened!!" + str(type(e)) + " : " + str(e.args) + " : " + str(e) 
+                        #create the error message
+                        ERROR_MESSAGE += "Error: Something went wrong. Your action has been logged and sent to the admin" + str(type(e)) + " : " + str(e.args) + " : " + str(e) 
+                   
+            else: ERROR_MESSAGE += "Error: You do not have permission to access this form type from a different project. Your action has been logged and sent to the admin"   
+        else: ERROR_MESSAGE += "Error: You do not have permission to access this tool. Your action has been logged and sent to the admin"
         
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
 
-       
-    #=======================================================#
-    #   ACCESS LEVEL :  1      CHECK_PROGRESS_QUERY()
-    #=======================================================#          
-    def check_progress_query(self, request):
-        #***************#
-        ACCESS_LEVEL = 1
-        #***************#  
-
-        
-        #----------------------------------------------------------------------------------------------------------------------------
-        #   This Endpoint just checks the progress of the submitted UUID Progress Object
-        #   --It's used by longer functions that require time on the server to process to keep the usser updated on the progress of their
-        #   --query submitted. Security isn't particularly important here, because the information provided isn't particularly sensitive,
-        #   --and this model/object doesn't have a foreign key to a project. It can only be accessed by a UUID(unique ID) provided by the user
-        #   --and the chance of someone figuring out a 32character long random string in the small amount of time it takes to process the server
-        #   --function is considerably low--and even if they DID manage to hack it, the information they recieve is essentially rubbish and offers
-        #   --no sensitive data except perhaps the name or label of some rtypes--and associated counts for the query. I suppose that could be
-        #   --potentially sensitive--but the security  risk is so low that I won't spend time worrying about it.
-        #   TODO: an option to secure this, is to attach a foreign key to the ProgressObject to the project in question. This Endpoint could then 
-        #       --cross check the session user's project and make sure they're only accessing progress objects that are part of their project. Once
-        #       --again--not a priority right now but I ahve it in a TODO tag for future edits when time is more available
-        
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level  
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):   
-        
-            #Returns a JSON string to an AJAX request given a provided UUID   
-            try:
-                currentProcessObject = AJAXRequestData.objects.filter(uuid=request.GET['uuid'])[0]
-                currentProcessObject.keep_alive = True
-                currentProcessObject.save()
-                #If finished, then delete the process object
-                if currentProcessObject.is_finished:
-                    print >> sys.stderr, "DELETING OBJECT I GUESS?"
-                    currentProcessObject.delete()
-                currentJson = currentProcessObject.jsonString
-                #return the json response      
-                return HttpResponse(currentJson, content_type="application/json")  
-            except Exception as e:
-                print >>sys.stderr, "Whoops---hmmm....."
-                print >>sys.stderr, e
-                ERROR_MESSAGE += "Something happened during the check to the Progress Object--it might not have been created yet, and we are checking too quickly..."
-                return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")                  
-
-        else: ERROR_MESSAGE += "Error: You do not have permission to access checking a query UUID progress object"
-        
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")              
-            
-            
     #=======================================================#
     #   ACCESS LEVEL :  2      BULK_EDIT_FORMTYPE()
     #=======================================================#        
@@ -1489,281 +2871,7 @@ class MyAdminSite(AdminSite):
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")  
-        
-  
-    #=======================================================#
-    #   ACCESS LEVEL :  1      GET_RTYPE_LIST()
-    #=======================================================#   
-    def get_rtype_list(self, request):
-        #***************#
-        ACCESS_LEVEL = 1
-        #***************#            
-        
-        #----------------------------------------------------------------------------------------------------------------------------
-        #   This Endpoint returns a list of all record types in a formtype template. This is used  mainly by the query engine
-        #   --to figure out which rtypes to search by when a record reference type is chosen.
-        
-        
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-        
-            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
-            if request.method == "POST":
-                if 'frrt-pk' in request.POST:
-                    currentFRRT = FormType.objects.get(pk=FormRecordReferenceType.objects.get(pk=request.POST['frrt-pk']).form_type_reference.pk)
-                    # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
-                    #TODO: This will obviously trigger server side errors if the returned query is empty(e.g. the user tries to access a formtype that isn't attached to their project)
-                    if currentFRRT.project.pk == request.user.permissions.project.pk:
-                        finalJSON = {}
-                        rtypeList = []
-                        for FRAT in currentFRRT.formrecordattributetype_set.all():
-                            currentRTYPE = {}
-                            currentRTYPE['label'] = FRAT.record_type
-                            currentRTYPE['pk'] = FRAT.pk
-                            currentRTYPE['rtype'] = 'FRAT'
-                            rtypeList.append(currentRTYPE)
-                            
-                        for FRRT in currentFRRT.ref_to_parent_formtype.all():
-                            currentRTYPE = {}
-                            currentRTYPE['label'] = FRRT.record_type
-                            currentRTYPE['pk'] = FRRT.pk
-                            currentRTYPE['rtype'] = 'FRRT'
-                            rtypeList.append(currentRTYPE)
-                            
-                        finalJSON['rtype_list'] = rtypeList
-                        finalJSON = json.dumps(finalJSON)
-                        return HttpResponse(finalJSON, content_type="application/json" )
-                    ERROR_MESSAGE += "Error: You are trying to access a FRRT that doesn't belong to this project!"
-                ERROR_MESSAGE += "Error: no FormRecordReferenceType in POST"
-            ERROR_MESSAGE += "Error: You have not submitted through POST"
-            
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
 
-    
-    #=======================================================#
-    #   ACCESS LEVEL :  1      GET_FORM_SEARCH_LIST()
-    #=======================================================#        
-    def get_form_search_list(self, request):
-        #***************#
-        ACCESS_LEVEL = 1
-        #***************#            
-        #----------------------------------------------------------------------------------------------------------------------------
-        #   This Endpoint does nothing but return a small list of forms that match the provided query string
-        #   --It acts as a simple Google style search bar that autocompletes the user's typing. This is handy
-        #   --when a project may have upwards of 5000 forms and scrolling through/loading a list of 5000 forms is a bit slow and unwieldy
-        #
-        # Speed:  This function, on a low-end server, can produce an answer in less than a second
- 
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
- 
-            if request.method == 'POST':
-                if 'query' in request.POST:
-                    #initialize our variables we'll need
-                    projectPK = request.POST['projectID']
-                    formtypePK = request.POST['formtypeID']
-                    searchString = request.POST['query']
-                    jsonResponse = {}
-                    form_list = []
-                    jsonResponse['form_list'] = form_list
-                    
-                    #Only search if the searchString isn't empty
-                    if len(searchString) != 0:
-                        #Initialize our query to contain all forms of this formtype and project
-                        queriedForms = Form.objects.all().filter(form_type__pk=formtypePK)
-                        # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
-                        queriedForms.filter(project__pk=request.user.permissions.project.pk)
-                        allTerms = searchString.split(' ')
-                        
-                        #I'd like to do a starts with filter if there is less than 2 letters in the first term, otherwise 
-                        #--go back to a normal icontains.
-                        if len(allTerms) == 1:
-                            if len(searchString) < 3:
-                                newQuery = queriedForms.filter(form_name__istartswith=searchString)
-                                #Now let's make this just a tad bit more robust--if it finds zero matches with istartswith--then default back to icontains until it finds a match
-                                if newQuery.exists() != True:
-                                    queriedForms = queriedForms.filter(form_name__icontains=searchString)
-                                else:
-                                    queriedForms = newQuery
-                            else:
-                                queriedForms = queriedForms.filter(form_name__icontains=searchString)
-                        elif len(allTerms) > 1:        
-                            for term in allTerms:
-                                queriedForms = queriedForms.filter(form_name__icontains=term)
-                                
-                        #We need to get a list no longer than 5 long of the submitted results    
-                        queriedForms = queriedForms[:5]
-                        #create our python dict to send as JSON
-                        for form in queriedForms:
-                            currentForm = {}
-                            currentForm['projectPK'] = form.project.pk
-                            currentForm['formtypePK'] = form.form_type.pk
-                            currentForm['formPK'] = form.pk
-                            currentForm['label'] = form.form_name
-                            currentForm['longLabel'] = form.form_type.form_type_name + " - " + form.form_name
-                            currentForm['thumbnail'] = form.get_ref_thumbnail()
-                            currentForm['url'] = reverse('maqlu_admin:edit_form',kwargs={'project_pk': request.user.permissions.project.pk, 'form_type_pk': form.form_type.pk, 'form_pk':form.pk})
-                            form_list.append(currentForm)
-                        #return the finished JSON
-                        jsonResponse = json.dumps(jsonResponse)
-                        return HttpResponse(jsonResponse, content_type="application/json")
-            ERROR_MESSAGE += "Error: You have not submitted through POST"
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")       
-  
-          
-    #=======================================================#
-    #   ACCESS LEVEL :  1      GET_PREVIOUS_NEXT_FORMS()
-    #=======================================================#   
-    def get_previous_next_forms(self, request):
-        #***************#
-        ACCESS_LEVEL = 1
-        #***************#        
-        #This API EndPoint takes a formtype PK and a form PK and returns the previous, current, and next forms in a sorted list
-        #--This gives back and forward functionality when navigating forms.
-        #--It first filters out only the forms related to the formtype, and then sorts them by the indexed value
-        #--'sort_index' -- sort_index is a Form attribute that is a unique indexed value "<form_name>---<form_pk>"
-        #--We then submit the parsed out name and pk numbers for the previous and next forms for the form requested
-        #--This also forces a users project as a filter--jsut in case they manage to find a way to pass a form_type that doesn't belong to their project
-        #----------------------------------------------------------------------------------------------------------------------------
-        # Speed:  This function, on a low-end server, can produce an answer in ~1.5 secs for a sort of ~100,000 rows
-        #            --Anything less than that easily hits under a second--which is nice and fast
-        #            --I assume on a deployment server with better cpus/RAM this will be even faster
-
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-            #Make sure we only take POST requests        
-            if request.method == 'POST':
-                #POST values submitted are :  formtype_pk   &  form_pk & project_pk
-                #Check if they exist, and only continue if they do
-                if 'formtype_pk' in request.POST and 'form_pk' in request.POST and 'project_pk' in request.POST:
-                    
-                    thisQuery = Form.objects.filter(form_type__pk=request.POST['formtype_pk'])
-                    # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
-                    thisQuery.filter( project__pk=request.user.permissions.project.pk)
-                    thisQuery = thisQuery.order_by('sort_index')
-
-                    allVals = thisQuery.values_list('sort_index', flat=True)
-
-                    formPKToLookFor = request.POST['form_pk']
-
-                    for index, value in enumerate(allVals):
-                        #Our delimiter is "---" for 'sort_index'
-                        label, pkVal = value.split('---')
-                        #Only activate if we find the matching form PK in the list
-                        if formPKToLookFor == pkVal:
-                            #Once we find our match, we simply get the values for the previous and next forms in our list by adding or subtracting from the index
-                            #--Now, what if we are at the first or last form in the list? This will obviously trip an Index Error in Python so let's fix that.
-                            #--We'll add functionality to cycle to the last index if at the beginning, or the first index if at the end
-                            lastIndex = len(allVals)-1
-                            #First test for our previousForm values
-                            if (index-1) < 0: previousForm = allVals[lastIndex].split('---')
-                            else:             previousForm = allVals[index-1].split('---')
-                            #Then test for our NextForm values
-                            if (index+1) > lastIndex: nextForm = allVals[0].split('---')
-                            else:                     nextForm = allVals[index+1].split('---')
-                            
-                            #Now create the json string to submit
-                            jsonResponse = '{"previous_label":"'+previousForm[0]+'","previous_pk":"'+previousForm[1]+'","next_label":"'+nextForm[0]+'","next_pk":"'+nextForm[1]+'","current_label":"'+label+'","current_pk":"'+pkVal+'","formtype_pk":"'+request.POST['formtype_pk']+'","project_pk":"'+request.POST['project_pk']+'"}'
-                    return HttpResponse(jsonResponse, content_type="application/json")
-                
-            #return an indicator to trigger empty "#" links if there is missing data in the POST data
-            return HttpResponse('{"ERROR":"There were missing POST values in this request--either javascript is deactivated, or maybe someone is trying to do a little client-side hacking Hmm?"}',content_type="application/json")
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
-
- 
-    #=======================================================#
-    #   ACCESS LEVEL :  5      GET_USER_LIST()
-    #=======================================================#       
-    def get_user_list(self, request):        
-        #***************#
-        ACCESS_LEVEL = 5
-        #***************#        
-        #------------------------------------------------------------------------------------------------------------------------------------
-        #   :::This function just returns a list of users with their information for the project's userform
-        #   --Obviously it should only give access to those with the admin level permissions. This will not return a pass word, nor allow edits
-        #   --But for privacy reasons, let's keep it limited to level 5 access.
-        #   --The main project control panel will show limited user information to those without access, so let's keep it that way
-        #------------------------------------------------------------------------------------------------------------------------------------  
-        
-        ERROR_MESSAGE = ""        
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-            #Make sure we only take POST requests
-            if request.method == 'POST':
-                returnedJSON = {}
-                userList = []
-                returnedJSON['userlist'] = userList
-                # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
-                projectUsers = User.objects.all().filter(permissions__project__pk=request.user.permissions.project.pk)
-                count = len(projectUsers)
-                for aUser in projectUsers:
-                    currentUser = {}
-                    currentUser['user_id'] = aUser.pk
-                    currentUser['username'] = aUser.username
-                    currentUser['access_level'] = aUser.permissions.access_level
-                    currentUser['name'] = aUser.first_name + " " + aUser.last_name
-                    currentUser['title'] = aUser.permissions.job_title
-                    currentUser['email'] = aUser.email
-                    userList.append(currentUser)
-                returnedJSON = json.dumps(returnedJSON);
-                return HttpResponse(returnedJSON,content_type="application/json") 
-            ERROR_MESSAGE += "Error: You have not submitted through POST"
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
-        
-  
-    #=======================================================#
-    #   ACCESS LEVEL :  5       USERNAME_TAKEN()
-    #=======================================================#        
-    def username_taken(self, request):
-        #***************#
-        ACCESS_LEVEL = 5
-        #***************#
-        #------------------------------------------------------------------------------------------------------------------------------------
-        #:::This function just returns a 'true' or 'false' json response if the submitted 'username' string is already taken
-        #   --This still requires access level 5 because only the admin who can create and manage users should be using it
-        #   --It's not crazy important if someone receives a true or false response--this doesn't change the database, but for
-        #   --confidentiality, someone can't just 'guess' someone's username by typing this in over and over again
-        #   --a public version would need to lock sessions/users attempting it too many times
-        #------------------------------------------------------------------------------------------------------------------------------------
-        
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-            #Make sure we only take POST requests
-            if request.method == 'POST':                        
-                if User.objects.all().filter(username=request.POST['username']).exists():
-                    return HttpResponse('{"user_exists":"T"}', content_type="application/json")
-                else:
-                    return HttpResponse('{"user_exists":"F"}', content_type="application/json")
-
-            ERROR_MESSAGE += "Error: You have not submitted through POST"
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
-        
-                               
     #=======================================================#
     #   ACCESS LEVEL :  5        MODIFY_PROJECT_USER()
     #=======================================================#
@@ -1947,9 +3055,1231 @@ class MyAdminSite(AdminSite):
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")  
+        
+    #=======================================================#
+    #   ACCESS LEVEL :  2      SAVE_FORM_CHANGES()
+    #=======================================================#   
+    def save_form_changes(self, request):
+        #***************#
+        ACCESS_LEVEL = 2
+        #***************#
+        #------------------------------------------------------------------------------------------------------------------------------------
+        #:::This function edits a form. In order to maintain integrity when editing a form--we need to assume
+        #   --the worst. In this case someone may be atempting to pass a different pk into this endpoint and edit a new form there.
+        #   --this isn't terribly problematic in terms of security--if someone can access this function then they can edit any form in
+        #   --their project. We just need to make sure they can ONLY affect forms in their own project. Performing a simple check on the
+        #   --form parent pks the submitted RTYPES are child'd to should be enough to deter these shenanigans--but once again--the worst someone can
+        #   --do if hijacking this endpoint is add/change new data. They can't delete anything.
+        #------------------------------------------------------------------------------------------------------------------------------------
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests
+            if request.method == 'POST':                        
+                print >>sys.stderr, request.POST
+                post_data = request.POST
+                #$$$ SECURITY $$$ Make sure we can ONLY access this form for editing if it is within the user's project space
+                formToEdit = Form.objects.get(pk=post_data['form_id'])
+                if formToEdit.project.pk == request.user.permissions.project.pk:
+                    form_type = formToEdit.form_type
+                    #Update the form's basic attributes
+                    #Figure out if the input field is a number(int) or a string label
+                    #*I'm not particulary fond of using try/catch's to control logic, but apparently it is the
+                    #"pythonic" thing to do looking online and the Python Core uses this often it seems
+                    try:
+                        formToEdit.form_name = post_data.get('form_number')
+                        formToEdit.form_number = int(post_data.get('form_number'))
+                    except:
+                        formToEdit.form_name = post_data.get('form_number')
+                        formToEdit.form_number = None            
+                    formToEdit.form_geojson_string = post_data.get('form_geojson_string')
+                    #Update the hierchical parent reference if relevant
+                    if form_type.is_hierarchical:
+                        if post_data.get('hierarchical_reference') == 'NONE':
+                            formToEdit.hierarchy_parent = None
+                        else:
+                            formToEdit.hierarchy_parent = Form.objects.get(pk=post_data.get('hierarchical_reference'))
+
+                   
+                    for key in post_data:
+                        splitKey = key.split("__")
+                        #Update all of the form's FormRecordReferenceTypes
+                        if len(splitKey) > 1:
+                            if len(splitKey) == 2: 
+                                code,type_pk = splitKey
+                                print >> sys.stderr, "Getting Close: " + code + " : " + type_pk
+                                
+                                #Update all of the form's FormRecordAttributeValues
+                                if code == "frav":
+                                    currentValue = FormRecordAttributeValue.objects.get(pk=type_pk)
+                                    # $$$ SECURITY $$$: Before we make any changes, we need to make sure we are editing a record value that has
+                                    #   --the same project parent as the user. The user could inject pks from other projects into this and randomly
+                                    #   --attack data.
+                                    if currentValue.project.pk == request.user.permissions.project.pk:
+                                        currentValue.record_value = post_data[key]
+                                        #Add the user information
+                                        currentValue.modified_by = request.user
+                                        currentValue.save()
+                                    else:
+                                        ERROR_MESSAGE += "You have attempted to edit a form with an attribute record type that is not part of your project space."
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")                                         
+                                #If we're editing this particular reference
+                                elif code == "frrv":
+                                    currentReferenceValue = FormRecordReferenceValue.objects.get(pk=type_pk)
+                                    # $$$ SECURITY $$$: Before we make any changes, we need to make sure we are editing a record value that has
+                                    #   --the same project parent as the user. The user could inject pks from other projects into this and randomly
+                                    #   --attack data.
+                                    if currentReferenceValue.project.pk == request.user.permissions.project.pk:
+                                        #first clear the manytomany field
+                                        currentReferenceValue.record_reference.clear()
+                                        #loop through all available selections and add them to the manytomany field
+                                        for reference in post_data.getlist(key):
+                                            print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
+                                            #make sure we add a null check here--the user might not have chosen a referenced form
+                                            if reference != '':
+                                                currentReferenceValue.record_reference.add(Form.objects.get(pk=reference))
+                                            print >> sys.stderr, str(currentReferenceValue.record_reference) + "  <!----- ADDED THIS REF"
+                                        #Add the user information
+                                        currentReferenceValue.modified_by = request.user    
+                                        if ('frrv__'+type_pk+'__ext') in request.POST: 
+                                            currentReferenceValue.external_key_reference = request.POST['frrv__'+type_pk+'__ext']  
+                                        else:
+                                            currentReferenceValue.external_key_reference = request.POST[key]                                            
+                                        #save the reference value
+                                        currentReferenceValue.save()  
+                                    else:
+                                        ERROR_MESSAGE += "You have attempted to edit a form with a reference record type that is not part of your project space."
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")  
+                                elif code == "frrvNEW":
+                                    #If there isa 'new' FRRV needed, that means the formtype was created manually and not through the csv importer. This is fine, we just
+                                    #need to make a new one now and add the necessary attributes to it.
+                                    newFRRV = FormRecordReferenceValue()
+                                    newFRRV.project = request.user.permissions.project
+                                    newFRRV.created_by = request.user
+                                    newFRRV.modified_by = request.user
+                                    newFRRV.record_reference_type = FormRecordReferenceType.objects.get(pk=type_pk)
+                                    newFRRV.form_parent = formToEdit
+                                    if ('frrvNEW__'+type_pk+'__ext') in request.POST: 
+                                        newFRRV.external_key_reference = request.POST['frrvNEW__'+type_pk+'__ext']
+                                    else:
+                                        newFRRV.external_key_reference = request.POST[key]
+                                    #We have to save the new FRRV to the SQL database before adding new references I think
+                                    newFRRV.save()
+                                    for reference in post_data.getlist(key):
+                                        print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
+                                        #make sure we add a null check here--the user might not have chosen a referenced form
+                                        if reference != '':
+                                            newFRRV.record_reference.add(Form.objects.get(pk=reference))
+                                        print >> sys.stderr, str(newFRRV.record_reference) + "  <!----- ADDED THIS REF"   
+                                    newFRRV.save()
+                                #If we're dealing with a NEW FRAV -- it will be coded as 'frat' instead of 'frav'
+                                elif code == "frat":
+                                    currentFRAT = FormRecordAttributeType.objects.get(pk=type_pk)
+                                    #$$$ SECURITY $$$ -- We need make sure they are trying to add rtype values that are attached to this project
+                                    #if they are not, then show an error page and delete this current form.
+                                    if currentFRAT.project.pk == request.user.permissions.project.pk:
+                                        newformrecordattributevalue = FormRecordAttributeValue(record_value = post_data[key])
+                                        newformrecordattributevalue.form_parent=formToEdit
+                                        newformrecordattributevalue.record_attribute_type=currentFRAT
+                                        #Add the user information - We only set created by in endpoints that create the model for the first time
+                                        newformrecordattributevalue.created_by = request.user
+                                        newformrecordattributevalue.modified_by = request.user
+                                        newformrecordattributevalue.save()
+                                    else:
+                                        ERROR_MESSAGE += "You have attempted to add a form with a attribute record type that is not part of your project space."
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json") 
+                    # If we've managed to get this far, then save the form changes. Otherwise some error occured and nothing should be saved
+                    #   --in order to maintain database integrity -- this will still not affect individual values--but it will stop some things from changing.
+                    #Add the user information
+                    formToEdit.modified_by = request.user
+                    formToEdit.save()
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
+                ERROR_MESSAGE += "Error: You are attempting to access a form outside your project space!"                            
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
+
+        
+    #=======================================================#
+    #   ACCESS LEVEL :  2       CREATE_NEW_FORM()
+    #=======================================================#      
+    def create_new_form(self, request):
+        #***************#
+        ACCESS_LEVEL = 2
+        #***************#
+        #------------------------------------------------------------------------------------------------------------------------------------
+        #:::This function creates a new form of the given form type. In order to maintain integrity when creating a new form--we need to assume
+        #   --the worst. In this case someone may be atempting to pass a different form-type pk into this endpoint and create a new form there.
+        #   --this isn't terribly problematic in terms of security--if someone can access this function then they can edit any form type in
+        #   --their project. We just need to make sure they can ONLY affect form types in their own project. Performing a simple check on the
+        #   --form_type the submitted RTYPES are child'd to should be enough to deter these shenanigans--but once again--the worst someone can
+        #   --do if hijacking this endpoint is add new data. They can't delete anything.
+        #------------------------------------------------------------------------------------------------------------------------------------
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests
+            if request.method == 'POST':      
+                #Create New Form with formtype
+                post_data = request.POST
+                form_type = FormType.objects.get(pk=post_data['formtype_id'])
+                #Make sure we're in the user's allowed project space
+                if form_type.project.pk == request.user.permissions.project.pk:
+                    
+                    addedFRAT_pks = {}
+                    addedFRRT_pks = {}
+                
+                    newform = Form(form_name='', form_number=post_data.get('form_number'), form_geojson_string=post_data.get('form_geojson_string'))
+                    newform.form_type=form_type 
+
+                    #Add the user information - We only set created by in endpoints that create the model for the first time
+                    newform.created_by = request.user
+                    newform.modified_by = request.user
+                
+                    #Figure out if the input field is a number(int) or a string label
+                    #"pythonic" thing to do looking online and the Python Core uses this often it seems
+                    #*I'm not particulary fond of using try/catch's to control logic, but apparently it is the Python way
+                    try:
+                        newform.form_name = post_data.get('form_number')
+                        newform.form_number = int(post_data.get('form_number'))
+                    except:
+                        newform.form_name = post_data.get('form_number')
+                        newform.form_number = None    
+                    #Update the hierchical parent reference if relevant
+                    if form_type.is_hierarchical:
+                        if post_data.get('hierarchical_reference') == 'NONE':
+                            newform.hierarchy_parent = None
+                        else:
+                            newform.hierarchy_parent = Form.objects.get(pk=post_data.get('hierarchical_reference'))
+                    #save the form
+                    newform.save()
+                    
+                    print >> sys.stderr, request.POST
+                    #Now we need to create all the attributes from the form input
+                    for key in post_data:
+                        splitKey = key.split("__")
+                        if len(splitKey) > 1:
+                            if len(splitKey) == 2: 
+                            
+                                code,type_pk = splitKey
+                                print >> sys.stderr, "Getting Close: " + code + " : " + type_pk
+                                if code == "frat":
+                                    currentFRAT = FormRecordAttributeType.objects.get(pk=type_pk)
+                                    #$$$ SECURITY $$$ -- We need make sure they are trying to add rtype values that are attached to this project
+                                    #if they are not, then show an error page and delete this current form.
+                                    if currentFRAT.project.pk == request.user.permissions.project.pk:
+                                        newformrecordattributevalue = FormRecordAttributeValue(record_value = post_data[key])
+                                        newformrecordattributevalue.form_parent=newform
+                                        newformrecordattributevalue.record_attribute_type=currentFRAT
+                                        #Add the user information - We only set created by in endpoints that create the model for the first time
+                                        newformrecordattributevalue.created_by = request.user
+                                        newformrecordattributevalue.modified_by = request.user
+                                        newformrecordattributevalue.save()
+                                        
+                                        addedFRAT_pks[currentFRAT.pk] = "Added"
+                                    else:
+                                        newform.delete()
+                                        ERROR_MESSAGE += "You have attempted to add a form with a attribute record type that is not part of your project space."
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")     
+                                #Create all references from the form input
+                                elif code == "frrvNEW":
+                                    currentFRRT = FormRecordReferenceType.objects.get(pk=type_pk)
+                                    #$$$ SECURITY $$$ -- We need make sure they are trying to add rtype values that are attached to this project
+                                    #if they are not, then show an error page and delete this current form.
+                                    if currentFRRT.project.pk == request.user.permissions.project.pk:
+                                        newFRRV = FormRecordReferenceValue()
+                                        newFRRV.project = request.user.permissions.project
+                                        newFRRV.created_by = request.user
+                                        newFRRV.modified_by = request.user
+                                        newFRRV.record_reference_type = currentFRRT
+                                        newFRRV.form_parent = newform
+                                        newFRRV.external_key_reference = request.POST['frrvNEW__'+type_pk+'__ext']
+                                        #We have to save the new FRRV to the SQL database before adding new references I think
+                                        newFRRV.save()
+                                        for reference in post_data.getlist(key):
+                                            print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
+                                            #make sure we add a null check here--the user might not have chosen a referenced form
+                                            if reference != '':
+                                                newFRRV.record_reference.add(Form.objects.get(pk=reference))
+                                            print >> sys.stderr, str(newFRRV.record_reference) + "  <!----- ADDED THIS REF"   
+                                        newFRRV.save()
+                                        addedFRRT_pks[currentFRRT.pk] = "Added"
+                                    else:
+                                        newform.delete()
+                                        ERROR_MESSAGE += "You have attempted to add a form with a reference record type that is not part of your project space."
+                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+                    
+                    #Now we're going to make empty FRRTs and FRATs for all the remaining ones attached tot he form type
+                    allFRATs = form_type.formrecordattributetype_set.all();
+                    allFRRTs = form_type.ref_to_parent_formtype.all();
+                    print >>sys.stderr, addedFRAT_pks
+                    print >>sys.stderr, addedFRRT_pks
+                    #First make all necessary empty FRATS
+                    if allFRATs:
+                        for FRAT in allFRATs:
+                            if FRAT.pk in addedFRAT_pks:
+                                print >>sys.stderr, "YEP"
+                            else:
+                                #Make a new FRAV for this FRAT
+                                newFRAV = FormRecordAttributeValue(record_value = "")
+                                newFRAV.form_parent=newform
+                                newFRAV.record_attribute_type=FRAT
+                                #Add the user information - We only set created by in endpoints that create the model for the first time
+                                newFRAV.created_by = request.user
+                                newFRAV.modified_by = request.user
+                                newFRAV.save()                                
+                    if allFRRTs:
+                        for FRRT in allFRRTs:
+                            if FRRT.pk in addedFRRT_pks:
+                                print >>sys.stderr, "YEP"
+                            else:
+                                #Make a new FRRV for this FRRT
+                                newFRRV = FormRecordReferenceValue()
+                                newFRRV.project = request.user.permissions.project
+                                newFRRV.created_by = request.user
+                                newFRRV.modified_by = request.user
+                                newFRRV.record_reference_type = FRRT
+                                newFRRV.form_parent = newform
+                                newFRRV.external_key_reference = ""
+                                #We have to save the new FRRV to the SQL database before adding new references I think
+                                newFRRV.save()
+                                
+                    #SUCCESS!!
+                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json")   
+                ERROR_MESSAGE += "Error: You do not have permission to accesss this project."
+            else: ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
+    
 
     #=======================================================#
-    #   ACCESS LEVEL :  1       NAVIGATE_QUERY_PAGINATION()
+    #   ACCESS LEVEL :  1      SAVE_USER_QUERY() *RECYCLING
+    #=======================================================#   
+    def save_user_query(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
+            if request.method == "POST":
+                #We only add queries to the user and nothing else
+                currentQueries = request.user.permissions.saved_queries 
+                print >>sys.stderr, currentQueries
+                if currentQueries != "" and currentQueries != None:
+                    currentQuery = json.loads(currentQueries)
+                    currentQuery[request.POST['new_query_label']] = request.POST['new_query'] 
+                    finishedQueryList = json.dumps(currentQuery);
+                    request.user.permissions.saved_queries = finishedQueryList     
+                    request.user.permissions.save()                    
+                    return HttpResponse(finishedQueryList, content_type="application/json" )
+                else:
+                    newQuery = {}
+                    newQuery[request.POST['new_query_label']] = request.POST['new_query'] 
+                    newQuery = json.dumps(newQuery)
+                    request.user.permissions.saved_queries = newQuery
+                    request.user.permissions.save()
+                    return HttpResponse(newQuery, content_type="application/json" )
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+    
+    
+    #-------------------------------------------------------------------------------------------------------
+    # MODEL QUERY ENDPOINTS
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_PROJECTS() *RECYCLING
+    #=======================================================#   
+    def get_projects(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint returns a list of all projects. This is used mainly by the query engine
+        #   --to figure out which rtypes to search by when a record reference type is chosen.
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
+            if request.method == "POST":
+                #let's get all the public projects, which may not include our own, so let's redundantly merge it and then call distinct()
+                publicProjects = FormProject.objects.filter(is_public=True)
+                userProject = FormProject.objects.filter(pk=request.user.permissions.project.pk)
+                if publicProjects.exists():
+                    finalProjects = (publicProjects |userProject).distinct()
+                else:
+                    finalProjects = userProject 
+                finalJSON = {}
+                project_list = []
+
+                for aProject in finalProjects:
+                   project_list.append({"name":aProject.name, "pk":aProject.pk})
+                    
+                finalJSON['project_list'] = project_list
+                finalJSON = json.dumps(finalJSON)
+                return HttpResponse(finalJSON, content_type="application/json" )
+
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_FORMTYPES() *RECYCLING
+    #=======================================================#   
+    def get_formtypes(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint returns a list of all formtypes for a provided project pk. This is used mainly by the query engine
+        #   --to figure out which formtypes to add to a dropdown select by when a project is chosen.
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
+            if request.method == "POST":
+                #Let's get all available public formtypes not in recycling--unless the formtypes are from the users current, project.
+                #If it is the users current project, then don't use a is_public filter
+                print >>sys.stderr, request.POST['project_pk']  + "  :  "
+                if str(request.user.permissions.project.pk) == request.POST['project_pk']:
+                    print >>sys.stderr, "What...?" + str(request.user.permissions.project.pk)
+                    allFormTypes = FormType.objects.filter(project__pk=request.POST['project_pk'], flagged_for_deletion=False)
+                else:
+                    allFormTypes = FormType.objects.filter(is_public=True, project__pk=request.POST['project_pk'], flagged_for_deletion=False)
+                    
+                if allFormTypes:
+                    finalJSON = {}
+                    formtype_list = []
+
+                    for aFormType in allFormTypes:
+                       formtype_list.append({"name":aFormType.form_type_name, "pk":aFormType.pk})
+                        
+                    finalJSON['formtype_list'] = formtype_list
+                    finalJSON = json.dumps(finalJSON)
+                    return HttpResponse(finalJSON, content_type="application/json" )
+                    
+                else: ERROR_MESSAGE += "Error: no form types were found for this project"
+            else: ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+       
+
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_FORMTYPE_GEOSPATIAL_LAYERS() *RECYCLING
+    #=======================================================#   
+    def get_formtype_geospatial_layers(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint returns a list of geoJSON  'geometry' layers to add to a openlayers map
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+
+            if request.method == "POST":
+                print >>sys.stderr, request.POST['formtype_pk']  + "  :  "
+                currentFormType = FormType.objects.get(pk=request.POST['formtype_pk'])
+                if request.user.permissions.project.pk == currentFormType.project.pk:
+                    #geometry needs to be stored as a list of 'features'
+
+                    allGeometry = {}
+                    allGeometry['type'] = "FeatureCollection"
+                    allGeometry['name'] = currentFormType.form_type_name
+                    #allGeometry['crs'] = json.loads('{ "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::32638" } }')
+                    featureList = []
+                    allGeometry['features'] = featureList
+                    allForms = currentFormType.form_set.all()
+                    if allForms:
+                        for aForm in allForms:
+                            properties = {}
+                            allFRATs = aForm.form_type.formrecordattributetype_set.all();
+                            if allFRATs:
+                                for FRAT in allFRATs:
+                                    properties[FRAT.record_type]  = FormRecordAttributeValue.objects.get(record_attribute_type=FRAT, form_parent=aForm).record_value
+                            feature = {}
+                            feature['properties'] = properties
+                            feature['type'] = "Feature"
+                            feature['geometry'] = json.loads(aForm.form_geojson_string)
+                            print >>sys.stderr, "Loaded Timer"
+                            featureList.append(feature)
+                        
+                    allGeometry = json.dumps(allGeometry)
+                    return HttpResponse(allGeometry,content_type="application/json")    
+                    
+                else: ERROR_MESSAGE += "You do not have permission to access this form type from another project"
+            else: ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+  
+       
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_RTYPES *RECYCLING
+    #=======================================================#   
+    def get_rtypes(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint returns a list of all rtypes for a provided formtype pk. This is used mainly by the query engine
+        #   --to figure out which formtypes to add to a dropdown select by when a project is chosen.
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
+            if request.method == "POST":
+                #Grab the formtype
+                currentFormType = FormType.objects.get(pk=request.POST['formtype_pk'])
+                #If the requested formtype isn't the user's project, and flagged as being inaccessible then stop the request
+                if currentFormType.project.pk != request.user.permissions.project.pk and (currentFormType.flagged_for_deletion == True or currentFormType.is_public == False):
+                    ERROR_MESSAGE += "Error: You are attempting to access records that don't exist. This probably occurred because your client attempted altering the POST data before sending"
+                #Otherwise we are in the clear so grab the list and return it
+                else:
+                    finalJSON = {}
+                    rtypeList = []    
+                    #Don't filter out the public flags if this formtype is the users project--if it's not then absolutely use the is_public flags
+                    if currentFormType.project.pk == request.user.permissions.project.pk:          
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query
+                        for FRAT in currentFormType.formrecordattributetype_set.all().filter(flagged_for_deletion=False):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRAT.record_type
+                            currentRTYPE['pk'] = FRAT.pk
+                            currentRTYPE['rtype'] = 'FRAT'
+                            rtypeList.append(currentRTYPE)
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query    
+                        for FRRT in currentFormType.ref_to_parent_formtype.all().filter(flagged_for_deletion=False):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRRT.record_type
+                            currentRTYPE['pk'] = FRRT.pk
+                            if FRRT.form_type_reference: currentRTYPE['ref_formtype_pk'] = FRRT.form_type_reference.pk
+                            else: currentRTYPE['ref_formtype_pk'] = "None"
+                            currentRTYPE['rtype'] = 'FRRT'
+                            rtypeList.append(currentRTYPE)
+                    else:
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query
+                        for FRAT in currentFormType.formrecordattributetype_set.all().filter(flagged_for_deletion=False, is_public=True):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRAT.record_type
+                            currentRTYPE['pk'] = FRAT.pk
+                            currentRTYPE['rtype'] = 'FRAT'
+                            rtypeList.append(currentRTYPE)
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query    
+                        for FRRT in currentFormType.ref_to_parent_formtype.all().filter(flagged_for_deletion=False, is_public=True):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRRT.record_type
+                            currentRTYPE['pk'] = FRRT.pk
+                            if FRRT.form_type_reference: currentRTYPE['ref_formtype_pk'] = FRRT.form_type_reference.pk
+                            else: currentRTYPE['ref_formtype_pk'] = "None"
+                            currentRTYPE['rtype'] = 'FRRT'
+                            rtypeList.append(currentRTYPE)
+                   
+                    #sort our rtype list by the label
+                    rtypeList = sorted(rtypeList, key=lambda k: k['label']) 
+                    
+                    #Return the JSON response
+                    finalJSON['rtype_list'] = rtypeList
+                    finalJSON = json.dumps(finalJSON)
+                    return HttpResponse(finalJSON, content_type="application/json" )
+                    
+
+            else: ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+
+    
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  1      CHECK_PROGRESS()
+    #=======================================================#   
+    def check_progress(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#   
+
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint just checks the progress of the submitted UUID Progress Object
+        #   --It's used by longer functions that require time on the server to process to keep the usser updated on the progress of their
+        #   --formtype generator submitted. Security isn't particularly important here, because the information provided isn't particularly sensitive,
+        #   --and this model/object doesn't have a foreign key to a project. It can only be accessed by a UUID(unique ID) provided by the user
+        #   --and the chance of someone figuring out a 32character long random string in the small amount of time it takes to process the server
+        #   --function is considerably low--and even if they DID manage to hack it, the information they recieve is essentially rubbish and offers
+        #   --no sensitive data except perhaps the name or label of some rtypes--and associated counts for the query. I suppose that could be
+        #   --potentially sensitive--but the security  risk is so low that I won't spend time worrying about it.
+        #
+        #   TODO: an option to secure this, is to attach a foreign key to the ProgressObject to the project in question. This Endpoint could then 
+        #       --cross check the session user's project and make sure they're only accessing progress objects that are part of their project. Once
+        #       --again--not a priority right now but I ahve it in a TODO tag for future edits when time is more available
+        
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):   
+            #print >> sys.stderr, request.POST
+            #Returns a JSON string to an AJAX request given a provided UUID   
+            try:
+                currentProcessObject = AJAXRequestData.objects.filter(uuid=request.POST['uuid'])[0]
+                #print >>sys.stderr, "Keeping Alive?" 
+                currentProcessObject.keep_alive = True
+                currentProcessObject.save()
+                #If finished, then delete the process object
+                if currentProcessObject.is_finished:
+                    print >> sys.stderr, "DELETING OBJECT I GUESS?"
+                    currentProcessObject.delete()
+                currentJson = currentProcessObject.jsonString
+                #print >>sys.stderr, currentProcessObject.jsonString
+                #return the json response      
+                return HttpResponse(currentJson, content_type="application/json")  
+            except Exception as e:
+                print >>sys.stderr, "Whoops---hmmm....."
+                print >>sys.stderr, e
+                ERROR_MESSAGE += "Something happened during the check to the Progress Object--it might not have been created yet, and we are checking too quickly..." + str(e)
+                     
+
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")     
+
+       
+    #=======================================================#
+    #   ACCESS LEVEL :  1      CHECK_PROGRESS_QUERY()
+    #=======================================================#          
+    def check_progress_query(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#  
+
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint just checks the progress of the submitted UUID Progress Object
+        #   --It's used by longer functions that require time on the server to process to keep the usser updated on the progress of their
+        #   --query submitted. Security isn't particularly important here, because the information provided isn't particularly sensitive,
+        #   --and this model/object doesn't have a foreign key to a project. It can only be accessed by a UUID(unique ID) provided by the user
+        #   --and the chance of someone figuring out a 32character long random string in the small amount of time it takes to process the server
+        #   --function is considerably low--and even if they DID manage to hack it, the information they recieve is essentially rubbish and offers
+        #   --no sensitive data except perhaps the name or label of some rtypes--and associated counts for the query. I suppose that could be
+        #   --potentially sensitive--but the security  risk is so low that I won't spend time worrying about it.
+        #   TODO: an option to secure this, is to attach a foreign key to the ProgressObject to the project in question. This Endpoint could then 
+        #       --cross check the session user's project and make sure they're only accessing progress objects that are part of their project. Once
+        #       --again--not a priority right now but I ahve it in a TODO tag for future edits when time is more available
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level  
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):   
+        
+            #Returns a JSON string to an AJAX request given a provided UUID   
+            try:
+                currentProcessObject = AJAXRequestData.objects.filter(uuid=request.GET['uuid'])[0]
+                currentProcessObject.keep_alive = True
+                currentProcessObject.save()
+                #If finished, then delete the process object
+                if currentProcessObject.is_finished:
+                    print >> sys.stderr, "DELETING OBJECT I GUESS?"
+                    currentProcessObject.delete()
+                currentJson = currentProcessObject.jsonString
+                #return the json response      
+                return HttpResponse(currentJson, content_type="application/json")  
+            except Exception as e:
+                print >>sys.stderr, "Whoops---hmmm....."
+                print >>sys.stderr, e
+                ERROR_MESSAGE += "Something happened during the check to the Progress Object--it might not have been created yet, and we are checking too quickly..."
+                return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"False", "row_total":"0", "row_timer":"0"}',content_type="application/json")                  
+
+        else: ERROR_MESSAGE += "Error: You do not have permission to access checking a query UUID progress object"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'","row_index":"0","is_complete":"True", "row_total":"0", "row_timer":"0"}',content_type="application/json")              
+            
+            
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_RTYPE_LIST() *RECYCLING
+    #=======================================================#   
+    def get_rtype_list(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint returns a list of all record types in a formtype template. This is used  mainly by the query engine
+        #   --to figure out which rtypes to search by when a record reference type is chosen.
+        
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            #We need to return a json list of all formtype RTYPES that match the provided formtype pk
+            if request.method == "POST":
+                if 'frrt-pk' in request.POST:
+                    currentFormType = FormType.objects.get(pk=FormRecordReferenceType.objects.get(pk=request.POST['frrt-pk']).form_type_reference.pk)
+                elif 'formtype_pk' in request.POST:
+                    currentFormType = FormType.objects.get(pk=request.POST['formtype_pk'])
+                if currentFormType:
+                    # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
+                    #TODO: This will obviously trigger server side errors if the returned query is empty(e.g. the user tries to access a formtype that isn't attached to their project)
+                    if currentFormType.project.pk == request.user.permissions.project.pk:
+                        finalJSON = {}
+                        rtypeList = []
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query
+                        for FRAT in currentFormType.formrecordattributetype_set.all().filter(flagged_for_deletion=False):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRAT.record_type
+                            currentRTYPE['pk'] = FRAT.pk
+                            currentRTYPE['rtype'] = 'FRAT'
+                            rtypeList.append(currentRTYPE)
+                        #***RECYCLING BIN***  Make sure that the returned FRAT AND FRRTS are filtered by their deletion flags. Don't want them returned in the query    
+                        for FRRT in currentFormType.ref_to_parent_formtype.all().filter(flagged_for_deletion=False):
+                            currentRTYPE = {}
+                            currentRTYPE['label'] = FRRT.record_type
+                            currentRTYPE['pk'] = FRRT.pk
+                            if FRRT.form_type_reference: currentRTYPE['ref_formtype_pk'] = FRRT.form_type_reference.pk
+                            else: currentRTYPE['ref_formtype_pk'] = "None"
+                            currentRTYPE['rtype'] = 'FRRT'
+                            rtypeList.append(currentRTYPE)
+                            
+                        finalJSON['rtype_list'] = rtypeList
+                        finalJSON = json.dumps(finalJSON)
+                        return HttpResponse(finalJSON, content_type="application/json" )
+                    ERROR_MESSAGE += "Error: You are trying to access a FRRT that doesn't belong to this project!"
+                ERROR_MESSAGE += "Error: no FormRecordReferenceType in POST"
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+            
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")    
+
+    
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_FORM_SEARCH_LIST() *RECYCLING
+    #=======================================================#        
+    def get_form_search_list(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#            
+        #----------------------------------------------------------------------------------------------------------------------------
+        #   This Endpoint does nothing but return a small list of forms that match the provided query string
+        #   --It acts as a simple Google style search bar that autocompletes the user's typing. This is handy
+        #   --when a project may have upwards of 5000 forms and scrolling through/loading a list of 5000 forms is a bit slow and unwieldy
+        #
+        # Speed:  This function, on a low-end server, can produce an answer in less than a second
+ 
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+ 
+            if request.method == 'POST':
+                if 'query' in request.POST:
+                    #initialize our variables we'll need
+                    projectPK = request.POST['projectID']
+                    formtypePK = request.POST['formtypeID']
+                    searchString = request.POST['query']
+                    jsonResponse = {}
+                    form_list = []
+                    jsonResponse['form_list'] = form_list
+                    
+                    #Only search if the searchString isn't empty
+                    if len(searchString) != 0:
+                        #Initialize our query to contain all forms of this formtype and project
+                        queriedForms = Form.objects.all().filter(form_type__pk=formtypePK)
+                        # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
+                        queriedForms.filter(project__pk=request.user.permissions.project.pk)
+                        #***RECYCLING BIN***  Make sure that we filter out any forms flagged for deletion
+                        queriedForms.filter(flagged_for_deletion=False)
+                        allTerms = searchString.split(' ')
+                        
+                        #I'd like to do a starts with filter if there is less than 2 letters in the first term, otherwise 
+                        #--go back to a normal icontains.
+                        if len(allTerms) == 1:
+                            if len(searchString) < 3:
+                                newQuery = queriedForms.filter(form_name__istartswith=searchString)
+                                #Now let's make this just a tad bit more robust--if it finds zero matches with istartswith--then default back to icontains until it finds a match
+                                if newQuery.exists() != True:
+                                    queriedForms = queriedForms.filter(form_name__icontains=searchString)
+                                else:
+                                    queriedForms = newQuery
+                            else:
+                                queriedForms = queriedForms.filter(form_name__icontains=searchString)
+                        elif len(allTerms) > 1:        
+                            for term in allTerms:
+                                queriedForms = queriedForms.filter(form_name__icontains=term)
+                                
+                        #We need to get a list no longer than 5 long of the submitted results    
+                        queriedForms = queriedForms[:5]
+                        #create our python dict to send as JSON
+                        for form in queriedForms:
+                            currentForm = {}
+                            currentForm['projectPK'] = form.project.pk
+                            currentForm['formtypePK'] = form.form_type.pk
+                            currentForm['formPK'] = form.pk
+                            currentForm['label'] = form.form_name
+                            currentForm['longLabel'] = form.form_type.form_type_name + " - " + form.form_name
+                            currentForm['thumbnail'] = form.get_ref_thumbnail()
+                            currentForm['url'] = reverse('maqlu_admin:edit_form',kwargs={'project_pk': request.user.permissions.project.pk, 'form_type_pk': form.form_type.pk, 'form_pk':form.pk})
+                            form_list.append(currentForm)
+                        #return the finished JSON
+                        jsonResponse = json.dumps(jsonResponse)
+                        return HttpResponse(jsonResponse, content_type="application/json")
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")       
+  
+          
+    #=======================================================#
+    #   ACCESS LEVEL :  1      GET_PREVIOUS_NEXT_FORMS() *RECYCLING
+    #=======================================================#   
+    def get_previous_next_forms(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#        
+        #This API EndPoint takes a formtype PK and a form PK and returns the previous, current, and next forms in a sorted list
+        #--This gives back and forward functionality when navigating forms.
+        #--It first filters out only the forms related to the formtype, and then sorts them by the indexed value
+        #--'sort_index' -- sort_index is a Form attribute that is a unique indexed value "<form_name>---<form_pk>"
+        #--We then submit the parsed out name and pk numbers for the previous and next forms for the form requested
+        #--This also forces a users project as a filter--jsut in case they manage to find a way to pass a form_type that doesn't belong to their project
+        #----------------------------------------------------------------------------------------------------------------------------
+        # Speed:  This function, on a low-end server, can produce an answer in ~1.5 secs for a sort of ~100,000 rows
+        #            --Anything less than that easily hits under a second--which is nice and fast
+        #            --I assume on a deployment server with better cpus/RAM this will be even faster
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests        
+            if request.method == 'POST':
+                #POST values submitted are :  formtype_pk   &  form_pk & project_pk
+                #Check if they exist, and only continue if they do
+                if 'formtype_pk' in request.POST and 'form_pk' in request.POST and 'project_pk' in request.POST:
+                    
+                    thisQuery = Form.objects.filter(form_type__pk=request.POST['formtype_pk'])
+                    # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
+                    thisQuery.filter( project__pk=request.user.permissions.project.pk)
+                    #***RECYCLING BIN***  Make sure that the returned Forms aren't flagged for deletion
+                    thisQuery.filter(flagged_for_deletion=False)
+                    #Sort the query now
+                    thisQuery = thisQuery.order_by('sort_index')
+
+                    allVals = thisQuery.values_list('sort_index', flat=True)
+
+                    formPKToLookFor = request.POST['form_pk']
+
+                    for index, value in enumerate(allVals):
+                        #Our delimiter is "---" for 'sort_index'
+                        label, pkVal = value.split('---')
+                        #Only activate if we find the matching form PK in the list
+                        if formPKToLookFor == pkVal:
+                            #Once we find our match, we simply get the values for the previous and next forms in our list by adding or subtracting from the index
+                            #--Now, what if we are at the first or last form in the list? This will obviously trip an Index Error in Python so let's fix that.
+                            #--We'll add functionality to cycle to the last index if at the beginning, or the first index if at the end
+                            lastIndex = len(allVals)-1
+                            #First test for our previousForm values
+                            if (index-1) < 0: previousForm = allVals[lastIndex].split('---')
+                            else:             previousForm = allVals[index-1].split('---')
+                            #Then test for our NextForm values
+                            if (index+1) > lastIndex: nextForm = allVals[0].split('---')
+                            else:                     nextForm = allVals[index+1].split('---')
+                            
+                            #Now create the json string to submit
+                            jsonResponse = '{"previous_label":"'+previousForm[0]+'","previous_pk":"'+previousForm[1]+'","next_label":"'+nextForm[0]+'","next_pk":"'+nextForm[1]+'","current_label":"'+label+'","current_pk":"'+pkVal+'","formtype_pk":"'+request.POST['formtype_pk']+'","project_pk":"'+request.POST['project_pk']+'"}'
+                    return HttpResponse(jsonResponse, content_type="application/json")
+                
+            #return an indicator to trigger empty "#" links if there is missing data in the POST data
+            return HttpResponse('{"ERROR":"There were missing POST values in this request--either javascript is deactivated, or maybe someone is trying to do a little client-side hacking Hmm?"}',content_type="application/json")
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
+
+ 
+    #=======================================================#
+    #   ACCESS LEVEL :  5      GET_USER_LIST()
+    #=======================================================#       
+    def get_user_list(self, request):        
+        #***************#
+        ACCESS_LEVEL = 5
+        #***************#        
+        #------------------------------------------------------------------------------------------------------------------------------------
+        #   :::This function just returns a list of users with their information for the project's userform
+        #   --Obviously it should only give access to those with the admin level permissions. This will not return a pass word, nor allow edits
+        #   --But for privacy reasons, let's keep it limited to level 5 access.
+        #   --The main project control panel will show limited user information to those without access, so let's keep it that way
+        #------------------------------------------------------------------------------------------------------------------------------------  
+        
+        ERROR_MESSAGE = ""        
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests
+            if request.method == 'POST':
+                returnedJSON = {}
+                userList = []
+                returnedJSON['userlist'] = userList
+                # $$$-SECURITY-$$$: Make sure we filter by the users project as usual
+                projectUsers = User.objects.all().filter(permissions__project__pk=request.user.permissions.project.pk)
+                count = len(projectUsers)
+                for aUser in projectUsers:
+                    currentUser = {}
+                    currentUser['user_id'] = aUser.pk
+                    currentUser['username'] = aUser.username
+                    currentUser['access_level'] = aUser.permissions.access_level
+                    currentUser['name'] = aUser.first_name + " " + aUser.last_name
+                    currentUser['title'] = aUser.permissions.job_title
+                    currentUser['email'] = aUser.email
+                    userList.append(currentUser)
+                returnedJSON = json.dumps(returnedJSON);
+                return HttpResponse(returnedJSON,content_type="application/json") 
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
+        
+  
+    #=======================================================#
+    #   ACCESS LEVEL :  5       USERNAME_TAKEN()
+    #=======================================================#        
+    def username_taken(self, request):
+        #***************#
+        ACCESS_LEVEL = 5
+        #***************#
+        #------------------------------------------------------------------------------------------------------------------------------------
+        #:::This function just returns a 'true' or 'false' json response if the submitted 'username' string is already taken
+        #   --This still requires access level 5 because only the admin who can create and manage users should be using it
+        #   --It's not crazy important if someone receives a true or false response--this doesn't change the database, but for
+        #   --confidentiality, someone can't just 'guess' someone's username by typing this in over and over again
+        #   --a public version would need to lock sessions/users attempting it too many times
+        #------------------------------------------------------------------------------------------------------------------------------------
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #Make sure we only take POST requests
+            if request.method == 'POST':                        
+                if User.objects.all().filter(username=request.POST['username']).exists():
+                    return HttpResponse('{"user_exists":"T"}', content_type="application/json")
+                else:
+                    return HttpResponse('{"user_exists":"F"}', content_type="application/json")
+
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
+        
+
+    #=======================================================#
+    #   ACCESS LEVEL :  1       NAVIGATE_MASTER_QUERY_PAGINATION() *RECYCLING
+    #=======================================================#   
+    def navigate_master_query_pagination(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#
+        
+        #------------------------------------------------------------------------------------------------------------------------------------ 
+        #  This is the real magic of the database in terms of non-geospatial data. This Query engine takes complicated input from json POST data 
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            if request.method == 'POST':
+                print >>sys.stderr, "do something"
+                #We need to make sure we have permission to deal with the formtype--e.g. it's part of the user's current project
+                formtype = FormType.objects.get(pk=request.POST['formtype_id'])
+                
+                #If the project IDs match, then we're good to go! Also if it's not the project, but the formtype is set to PUBLIC then we are also good to go
+                if formtype.project.pk == request.user.permissions.project.pk or (formtype.project.pk != request.user.permissions.project.pk and formtype.is_public == True):
+                
+                    #First let's setup our header field of ordered labels 
+                    print >>sys.stderr,  "Timer Start"                
+                    form_att_type_list = []
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for attType in formtype.formrecordattributetype_set.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
+                        form_att_type_list.append((attType.order_number,'frat',attType.pk,attType.record_type)) 
+             
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for refType in formtype.ref_to_parent_formtype.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
+                        form_att_type_list.append((refType.order_number,'frrt',refType.pk,refType.record_type)) 
+                    #sort the new combined reference ad attribute type list combined
+                    form_att_type_list = sorted(form_att_type_list, key=lambda att: att[0])
+                    #we only want the first 5 types
+                    form_att_type_list = form_att_type_list[0:5]
+
+                    formList = []                
+                   
+                    
+                    #Setup a list to hold the attribute types from the query. We want to show the record types that are part of the search terms,
+                    #   --rather than the default types that are in order. If there are less than 5 query record types, use the ordered record type list
+                    #   --until 5 are met.
+                    queryRTYPElist = []
+                    uniqueRTYPES = []
+                    rtypeCounter = 1
+
+
+                    #We need to check the # of rtypes in our header list now--if it's less than 5, then let's add from the ordered list
+                    #We also need to make sure we aren't adding duplicates of the RTYPES, e.g. if we're looking for a match under "Object Number" and Object Number is already
+                    #--in our sorted order-num list--let's not re-add it.
+                    for attType in form_att_type_list:
+                        print >>sys.stderr, "AttTypeList:  " + str(attType)
+                        matchfound = False;
+                        for queryAttType in queryRTYPElist:
+                            if attType[2] == queryAttType[2]:
+                                matchfound = True
+                        if matchfound == False and len(queryRTYPElist) < 5:    
+                            #let's arbitrarily add '100' to the order number so that our queries are definitely in front of these
+                            queryRTYPElist.append((attType[0] + 100,attType[1],attType[2],attType[3]))
+                            
+                    for q in queryRTYPElist:
+                        print >>sys.stderr, "QTypeList:  " + str(q)
+
+
+                    print >>sys.stderr, request.POST
+                    #serializeTest = serializers.serialize("json", masterQuery)         
+                    queryCounter = 0
+                    logging.info("TEST A")
+                    logging.info("TEST A END")
+                    print >> sys.stderr, request.POST['form_list']
+                    masterQuery = request.POST['form_list'].split(',')
+                    #Figure out if we requested ALL results or just a single page
+                    
+                    if request.POST['requestedPageNumber'] != 'ALL':
+                        #Setup our Pagination values given in the POST string
+                        requestedPageNumber = int(request.POST['requestedPageNumber'])
+                        resultsPerPage = int(request.POST['resultsPerPage'])
+                        #Get our queryset slice values
+                        startIndex = (resultsPerPage * requestedPageNumber) - resultsPerPage
+                        endIndex = resultsPerPage * requestedPageNumber
+                    else:
+                        #We are asking for ALL results of this query--could take longer to load
+                        requestedPageNumber = "ALL"
+                        resultsPerPage = request.POST['numberOfResults']
+                        startIndex = 0
+                        endIndex = request.POST['numberOfResults']
+                    
+                    print >>sys.stderr, startIndex;
+                    print >>sys.stderr, endIndex;
+
+                    masterQuery = masterQuery[startIndex:endIndex]
+                    print >>sys.stderr, "TIMER RR"+ " : " + str(time.clock())
+                    #count the query so we only make one database hit before looping(otherwise each loop would be another hit)
+
+                    for form_pk in masterQuery:
+                        aForm = Form.objects.get(pk=form_pk)
+                        print >>sys.stderr, "TIMER S"+ " : " + str(time.clock())
+                        rowList = []
+                        #Let's loop through each item in the queryRTYPE list and match up the frav's in each queried form so the headers match the form attribute values
+                        for rtype in queryRTYPElist:
+                            if rtype[1] == 'frat':
+                                #print >>sys.stderr, str(rtype[2]) + '  ' + str(aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2]).count())
+                                print >>sys.stderr, "TIMER X"+ " : " + str(time.clock())
+                                formRVAL = aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2])
+                                #We need to check for NULL FRAV's here. When a user manually creates new forms, they don't always have FRAVS created for them if they leave it blank
+                                if formRVAL.exists():
+                                    rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
+                                else:
+                                    print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
+                                print >>sys.stderr, "TIMER Y"+ " : " + str(time.clock())
+                            else:
+                                #for frrt in aForm.ref_to_parent_form.all():
+                                    #print >>sys.stderr, "" + str(frrt.pk)
+                                formRVAL = aForm.ref_to_parent_form.all().filter(record_reference_type__pk=rtype[2])
+                                if formRVAL.exists():
+                                    formRVAL = formRVAL[0]
+                                    #First check to see if there are any relations stored in the many to many relationship
+                                    #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
+                                    #   --ajax request to process properly
+                                    allReferences = formRVAL.record_reference.all()
+                                    refCount = allReferences.count()
+                                    if refCount > 0:
+                                        if allReferences:
+                                            #we need to store a list of its references--it's a manytomany relationship
+                                            #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
+                                            #-- we also need to provide the formtype pk value for the link
+                                            listOfRefs = ""
+                                            for rec in allReferences:
+                                                listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
+                                            #remove the last delimeter
+                                            listOfRefs = listOfRefs[0:-3]
+                                        rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                                    else:
+                                        #Store the external key value instead and change it to a frrv-ext for the AJAX callable
+                                        rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                else:
+                                    #Store the external key value instead and change it to a frrv-null for the AJAX callable
+                                    rowList.append((rtype[0],'frrv-null',"", ""))
+
+                        print >>sys.stderr, "TIMER Z"+ " : " + str(time.clock())
+                        #sort the new combined reference ad attribute type list combined
+                        rowList = sorted(rowList, key=lambda att: att[0])
+                        # print >> sys.stderr, str(rowList)
+                        #Now let's handle the thumbnail bit of business for the query
+                        #--If the current form IS a media type already, then use itself to grab the thumbnail URI
+                        if aForm.form_type.type == 1:
+                            thumbnailURI = aForm.get_thumbnail_type()
+                        else:
+                            #let's find the first media type in the order but offer a default to "NO PREVIEW" if not found
+                            thumbnailURI = staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
+                            for record in rowList:            
+                                #if it's a reference
+                                if record[1] == 'frrv' or record[1] == 'frrv-ext':
+                                    currentRTYPE = FormRecordReferenceValue.objects.get(pk=int(record[3]))
+                                    #if it's not a NoneType reference:
+                                    if currentRTYPE.record_reference_type.form_type_reference != None:
+                                        #If its a reference to a media type
+                                        if currentRTYPE.record_reference_type.form_type_reference.type == 1:
+                                            print >> sys.stderr, "WE GOT A MATCH"
+                                            #Because a form record reference value is a ManyToMany relationship, we just grab the first one in the list
+                                            #TODO this may need to be edited later--because you can't order the selections. I may add another ForeignKey called
+                                            #"Thumbnail Reference" which links to a single relation to a form of a media type--this would also
+                                            #probably solve the complexity of looping through to grab it as it stands right now
+                                            #****WE also have to check for NULL references
+                                            if currentRTYPE.record_reference.all().count() > 0:
+                                                thumbnailURI = currentRTYPE.record_reference.all()[0].get_thumbnail_type()
+                                            break
+                                    
+                        #we only want the first 5 values from the final ordered list of attributes
+                        rowList = rowList[0:5]
+
+
+                        formList.append([thumbnailURI,str(aForm.pk), aForm, rowList])   
+                        print >>sys.stderr, "TIMER ZZ"+ " : " + str(time.clock())
+                        
+                    form_att_type_list, form_list = form_att_type_list, formList
+
+                    finishedJSONquery = {}
+                    
+                    headerList=[]
+                    for rtype in queryRTYPElist:
+                        rtypeDict = {}
+                        rtypeDict["index"] = rtype[0]
+                        rtypeDict["rtype"] = rtype[1]
+                        rtypeDict["pk"] = rtype[2]
+                        rtypeDict["name"] = rtype[3]
+                        headerList.append(rtypeDict)
+
+                    
+                    finishedJSONquery["rtype_header"] = headerList
+                    allFormList = []
+                    counter = 0
+                    total = len(formList)
+                    for form in formList:                   
+                        formDict = {}
+                        formDict["thumbnail_URI"] = form[0]
+                        formDict["pk"] = form[1]
+                        if formtype.is_hierarchical: formDict["form_id"] = form[2].get_hierarchy_label()
+                        else: formDict["form_id"] = form[2].form_name
+                        formRVALS = []
+                        for rval in form[3]:
+                            rvalDict = {}
+                            rvalDict["index"] = rval[0]
+                            rvalDict["rtype"] = rval[1]
+                            rvalDict["value"] = rval[2]
+                            rvalDict["pk"] = rval[3]
+                            formRVALS.append(rvalDict)
+                        formDict["rvals"] = formRVALS
+                        allFormList.append(formDict)
+
+                    
+                    finishedJSONquery["form_list"] = allFormList
+                    finishedJSONquery["formtype"] = formtype.form_type_name
+                    finishedJSONquery["formtype_pk"] = formtype.pk
+                    finishedJSONquery["project_pk"] = request.POST['project_id']
+                    finishedJSONquery["pagination_page"] = requestedPageNumber
+                    finishedJSONquery["resultsCount"] = request.POST['numberOfResults'] 
+                    finishedJSONquery["pagination_form_list"] = request.POST['form_list']
+
+                    
+                    #save our stats to the returned JSON
+                    #convert to JSON
+                    finishedJSONquery = json.dumps(finishedJSONquery)
+
+                    print >>sys.stderr,  "Timer End"     
+                    return HttpResponse(finishedJSONquery, content_type="application/json")
+
+
+                    
+                ERROR_MESSAGE += "Error: Trying to access missing or forbidden data"
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
+        
+               
+    #=======================================================#
+    #   ACCESS LEVEL :  1       NAVIGATE_QUERY_PAGINATION() *RECYCLING
     #=======================================================#   
     def navigate_query_pagination(self, request):
         #***************#
@@ -1969,8 +4299,8 @@ class MyAdminSite(AdminSite):
                 #We need to make sure we have permission to deal with the formtype--e.g. it's part of the user's current project
                 formtype = FormType.objects.get(pk=request.POST['formtype_id'])
                 
-                #If the project IDs match, then we're good to go!
-                if formtype.project.pk == request.user.permissions.project.pk:
+                #If the project IDs match, then we're good to go! Also if it's not the project, but the formtype is set to PUBLIC then we are also good to go
+                if formtype.project.pk == request.user.permissions.project.pk or (formtype.project.pk != request.user.permissions.project.pk and formtype.is_public == True):
                 
                     #Make the AJAX Request Data Model for subsequent AJAX calls
                     progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"message":"Loading Json","current_query":"","current_term":"","percent_done":"0","is_complete":"False"}')
@@ -1980,10 +4310,12 @@ class MyAdminSite(AdminSite):
                     #First let's setup our header field of ordered labels 
                     print >>sys.stderr,  "Timer Start"                
                     form_att_type_list = []
-                    for attType in formtype.formrecordattributetype_set.all().order_by('order_number')[:5]:
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for attType in formtype.formrecordattributetype_set.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
                         form_att_type_list.append((attType.order_number,'frat',attType.pk,attType.record_type)) 
-                        #form_att_type_list.append((attType.order_number,'frat',attType))                    
-                    for refType in formtype.ref_to_parent_formtype.all().order_by('order_number')[:5]:
+             
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for refType in formtype.ref_to_parent_formtype.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
                         form_att_type_list.append((refType.order_number,'frrt',refType.pk,refType.record_type)) 
                     #sort the new combined reference ad attribute type list combined
                     form_att_type_list = sorted(form_att_type_list, key=lambda att: att[0])
@@ -1994,7 +4326,8 @@ class MyAdminSite(AdminSite):
                     formList = []                
                    
                     #Setup our inital queryset that includes all forms
-                    masterQuery = formtype.form_set.all() 
+                    #***RECYCLING BIN*** Make sure our Forms are filtered by their deletion flags
+                    masterQuery = formtype.form_set.all().filter(flagged_for_deletion=False) 
                     
                     
                     #Setup a list to hold the attribute types from the query. We want to show the record types that are part of the search terms,
@@ -2016,7 +4349,9 @@ class MyAdminSite(AdminSite):
                         #setup a dictionary of key values of the query stats to add to the main querystas dictionary later
                         singleQueryStats = {} 
                         
-                        queriedForms = formtype.form_set.all()
+                        #***RECYCLING BIN*** Make sure our Forms are filtered by their deletion flags
+                        queriedForms = formtype.form_set.all().filter(flagged_for_deletion=False)
+                        
                         currentJSONQuery = masterQueryJSON['query_list'][query]
                         
                         uniqueQuery = False
@@ -2066,7 +4401,7 @@ class MyAdminSite(AdminSite):
                                         elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#EXCLUDES                                   
                                         elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK))#IS_NULL 
                                         #save stats and query
-
+                                        
                                         queriedForms = (newQuery | queriedForms)
                                 logging.info("TimerB"+ " : " + str(time.clock()))
                                 #We'll calculate percent by claiming finishing the query is at 50% when complete and at 20% when starting this section.
@@ -2288,12 +4623,14 @@ class MyAdminSite(AdminSite):
              
                     #Now make sure our final queried list has distint values--merging querysets has a tendency to create duplicates
                     masterQuery = masterQuery.distinct()
-                    
+                    #***RECYCLING BIN*** Make sure our final query gets filtered out with recycled forms(They can potentially be re-added in the above query engine
+                    masterQuery.filter(flagged_for_deletion=False)
                     #Send a message to our AJAX request object
                     progressData.jsonString = '{"message":"Running raw SQL","current_query":"","current_term":"''","percent_done":"50","is_complete":"False"}'
                     progressData.save()                 
                    
                    
+                    masterQueryCount = masterQuery.count()
                     
                     #Send a message to our AJAX request object
                     progressData.jsonString = '{"message":"Loading Queried Forms & Sending generated stats now...","current_query":"","current_term":"''","percent_done":"60","is_complete":"False","stats":"none"}'
@@ -2325,12 +4662,21 @@ class MyAdminSite(AdminSite):
                     logging.info("TEST A END")
                     
                     
-                    #Setup our Pagination values given in the POST string
-                    requestedPageNumber = int(request.POST['requestedPageNumber'])
-                    resultsPerPage = int(request.POST['resultsPerPage'])
-                    #Get our queryset slice values
-                    startIndex = (resultsPerPage * requestedPageNumber) - resultsPerPage
-                    endIndex = resultsPerPage * requestedPageNumber
+                    #Figure out if we requested ALL results or just a single page
+                    
+                    if request.POST['requestedPageNumber'] != 'ALL':
+                        #Setup our Pagination values given in the POST string
+                        requestedPageNumber = int(request.POST['requestedPageNumber'])
+                        resultsPerPage = int(request.POST['resultsPerPage'])
+                        #Get our queryset slice values
+                        startIndex = (resultsPerPage * requestedPageNumber) - resultsPerPage
+                        endIndex = resultsPerPage * requestedPageNumber
+                    else:
+                        #We are asking for ALL results of this query--could take longer to load
+                        requestedPageNumber = "ALL"
+                        resultsPerPage = request.POST['numberOfResults']
+                        startIndex = 0
+                        endIndex = request.POST['numberOfResults']
                     
                     print >>sys.stderr, startIndex;
                     print >>sys.stderr, endIndex;
@@ -2397,6 +4743,14 @@ class MyAdminSite(AdminSite):
                                         rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
                                     else:
                                         print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
+                                        #If there isn't an RVAL for this RTYPE then make a new one and return it instead
+                                        newFRAV = FormRecordAttributeValue()
+                                        newFRAV.record_attribute_type = FormRecordAttributeType.objects.get(pk=rtype[2])
+                                        newFRAV.form_parent = aForm
+                                        newFRAV.project = aForm.project
+                                        newFRAV.record_value = ""
+                                        newFRAV.save()
+                                        rowList.append((rtype[0],'frav',newFRAV.record_value, newFRAV.pk))
                                     print >>sys.stderr, "TIMER Y"+ " : " + str(time.clock())
                                 else:
                                     #for frrt in aForm.ref_to_parent_form.all():
@@ -2408,9 +4762,9 @@ class MyAdminSite(AdminSite):
                                         #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
                                         #   --ajax request to process properly
                                         allReferences = formRVAL.record_reference.all()
-                                        if allReferences:
-                                            refCount = allReferences.count()
-                                            if refCount > 0:
+                                        refCount = allReferences.count()
+                                        if refCount > 0:
+                                            if allReferences:
                                                 #we need to store a list of its references--it's a manytomany relationship
                                                 #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
                                                 #-- we also need to provide the formtype pk value for the link
@@ -2419,10 +4773,10 @@ class MyAdminSite(AdminSite):
                                                     listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
                                                 #remove the last delimeter
                                                 listOfRefs = listOfRefs[0:-3]
-                                                rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
-                                            else:
-                                                #Store the external key value instead and change it to a frrv-ext for the AJAX callable
-                                                rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                            rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                                        else:
+                                            #Store the external key value instead and change it to a frrv-ext for the AJAX callable
+                                            rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
                                     else:
                                         #Store the external key value instead and change it to a frrv-null for the AJAX callable
                                         rowList.append((rtype[0],'frrv-null',"", ""))
@@ -2517,7 +4871,7 @@ class MyAdminSite(AdminSite):
                     finishedJSONquery["project_pk"] = request.user.permissions.project.pk
                     finishedJSONquery["project"] = request.user.permissions.project.name
                     finishedJSONquery["pagination_page"] = requestedPageNumber
-                    finishedJSONquery["resultsCount"] = request.POST['numberOfResults'] #We use the count in post data so we don't have to RECOUNT the queryset in this function--that takes time
+                    finishedJSONquery["resultsCount"] = masterQueryCount 
                     finishedJSONquery["currentQuery"] = request.POST['currentQueryJSON']
                     #save our stats to the returned JSON
                     #convert to JSON
@@ -2535,9 +4889,711 @@ class MyAdminSite(AdminSite):
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")   
     
+    #=======================================================#
+    #   ACCESS LEVEL :  1       RUN_MASTER_QUERY_ENGINE() *Recycling
+    #=======================================================#   
+    def run_master_query_engine(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#
+        
+        #------------------------------------------------------------------------------------------------------------------------------------ 
+        #  This is the real magic of the database in terms of non-geospatial data. This Query engine takes complicated input from json POST data 
+        #   --and runs it through a long complex Django filter series to perform 1 of 2 tasks--the first is to produce a long set of counts in their
+        #   --given search parameters in order to generate several graphs/charts of the data. The second function is to actually produce a list of
+        #   --forms from the provided parameters to inspect and bulk edit. 
+        #
+        #   This takes 3 layers of parameters:
+        #           *The main query, which produces the form results, and has complex search options and AND/OR statements
+        #           *The option constraints query, which acts as an additional parameter when looking for deep counts with a comparison
+        #           *The primary contraints query, which acts as a further nested constraint on the previous 2
+        #       --Essentially each, parameter is an axis of a graph or dimension/each new parameter adds another dimension to that axis. It's more obviously
+        #       --apparent when actually seeing the results of a query
+        #  
+        #   There is a tremendous amount of code--which could probably be reduced in line count and size, but it was my first major foray into Django's%s
+        #   --query engine, so no doubt there are probably redundant lines. It's a bit complex because I needed 3 layers of parameters, and also needed
+        #   --the ability to perform queries when those parameters included relations. I had spent some time looking into nested functions to help deal with
+        #   --what felt like a lot of boiler plate for each section, but--I couldn't figure it out. It works--and I need to move on to other pastures with
+        #   --the project for now.
+        #
+        #   SPEED: I spent a great deal of time looking for alternative ways to speed up the queries behind this--it does take time. I haven't had a query
+        #   --take longer than a minute, but the potential is there. A minute isn't long in the grand scheme of things, but still. The time it takes to query
+        #   --also depends upon how many forms are part of the query-e.g. the test case of Ceramics in the AL-Hiba project has roughly 110,000 individual forms.
+        #   --A formtype with only 5000 forms wouldn't take time at all to process in comparison. The speed loss comes with nested queries(MYSQL doesn't like these)
+        #   --as well as INNER JOINS when dealing with the relations. I was able to cut the time in half from the first iteration--which is significant, but there
+        #   --are probably other ways I can increase the speed further still. TODO: One option to try is to grab a value list of PKs to submit to another query
+        #   --rather than chaining 2 querysets together(which causes an INNER JOIN in SQL) I tentatively tried this before--but without much success. I know
+        #   --what I'm doing far more now and it's worth trying out again in the future, but for now--this works, and provides user feedback to keep them
+        #   --updated with the goings on behind the curtain.
+        #
+        #   TODO: I've also moved this into an API Endpoint rather than as a process of the view itself. There may be some strange code decisions left in here
+        #   --as a function of that transition
+
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+        
+            if request.method == 'POST':
+                    
+                print >>sys.stderr, request.POST
+                #Make the AJAX Request Data Model for subsequent AJAX calls
+                progressData = AJAXRequestData(uuid=request.POST.get('uuid'), jsonString='{"message":"Loading Json","current_query":"","current_term":"","percent_done":"0","is_complete":"False"}')
+                progressData.save()
+                
+                #We need to loop through EACH project query in the JSON header and create a separate results box for each one
+                masterProjectQuery = json.loads(request.POST['master_query'])
+                
+                masterQueryResults = {}
+                all_project_queries = []
+                masterQueryResults['final_query_set'] = all_project_queries
+                
+                query_set = masterProjectQuery['query_list']
+                
+                globalPercentage = 0
+                queryPercentage = 0
+                queryPercentageIncrement = 100 / len(query_set)
+                queryPercentageCounter = 0
+                for query in query_set:
+                    print >>sys.stderr, "Starting a query?"
+                    # PROGRESS REPORT *****************************************
+                    #Setup our percentage monitors for the AJAX progress report
+                    queryPercentage = (queryPercentageCounter * queryPercentageIncrement)
+                    queryPercentageCounter += 1
+                    globalPercentage = queryPercentage
+                    progressData.jsonString = '{"message":"Performing Query","current_query":"'+query['project_label']+' : '+query['formtype_label']+'","current_term":"","percent_done":"'+str(globalPercentage)+'","is_complete":"False"}'
+                    progressData.save() 
+                    #**********************************************************
+                    
+                    queryProject = FormProject.objects.get(pk=query['project_pk']) 
+                    queryFormtype = FormType.objects.get(pk=query['formtype_pk'])
+                    #If we are querying a project different than the user and it is NOT set to public, then throw an error because it should be private
+                    if (queryProject.pk != request.user.permissions.project.pk and queryProject.is_public == False) or (queryFormtype.project.pk != request.user.permissions.project.pk and queryFormtype.is_public == False):
+                        ERROR_MESSAGE += "Error: You are trying to access a project or formtype that doesn't exist or access is not allowed. This has been logged to the network administrator"
+                        #Delete Our progress object
+                        print >>sys.stderr, "Hmmm are we exiting here?"
+                        progressData.delete();
+                        #break the loop and return the security message
+                        break;
+                    #Otherwise continue
+                    else:
+  
+                        #create a dictionary to store the query statistics
+                        queryStats = {}
+                        queryStats['formtype'] = query['formtype_label']
+                        queryStats['formtype_pk'] = query['formtype_pk']
+                        queryStats['project'] = query['project_label']
+                        queryStats['project_pk'] = query['project_pk']
+                        queryList = []
+                        queryStats['query_list'] = queryList
+                        primaryConstraintList = []
+                        
+                        print >>sys.stderr,  queryStats['project_pk']  + "  :  "  + query['project_pk']
+                        
+                        #First let's setup our header field of ordered labels 
+                        print >>sys.stderr,  "Timer Start"                
+                        form_att_type_list = []
+                        #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                        for attType in queryFormtype.formrecordattributetype_set.all().filter(flagged_for_deletion=False).order_by('order_number'):
+                            form_att_type_list.append((attType.order_number,'frat',attType.pk,attType.record_type)) 
+                 
+                        #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                        for refType in queryFormtype.ref_to_parent_formtype.all().filter(flagged_for_deletion=False).order_by('order_number'):
+                            form_att_type_list.append((refType.order_number,'frrt',refType.pk,refType.record_type)) 
+
+                        #sort the new combined reference ad attribute type list combined
+                        form_att_type_list = sorted(form_att_type_list, key=lambda att: att[0])
+                        #we only want the first 5 types
+                        #form_att_type_list = form_att_type_list[0:5]
+                        
+                        #Finally let's organize all of our reference and attribute values to match their provided order number
+                        formList = []                
+                       
+                        #Setup our inital queryset that includes all forms
+                        masterQuery = queryFormtype.form_set.all().filter(flagged_for_deletion=False) 
+                        
+                        
+                        #Setup a list to hold the attribute types from the query. We want to show the record types that are part of the search terms,
+                        #   --rather than the default types that are in order. If there are less than 5 query record types, use the ordered record type list
+                        #   --until 5 are met.
+                        queryRTYPElist = []
+                        uniqueRTYPES = []
+                        rtypeCounter = 1
+                        #Load the JSON query from POST
+                        
+                        
+
+                        for term in query['terms']:
+            
+                            print >>sys.stderr, query
+                            #setup a dictionary of key values of the query stats to add to the main querystas dictionary later
+                            singleQueryStats = {} 
+                            
+                            queriedForms = masterQuery
+                            #***RECYCLING BIN*** Make sure our Forms are filtered by their deletion flag
+    
+                            uniqueQuery = False
+                            #Let's not allow any duplicate rtypes in the query rtype list header e.g. we don't want "Object ID" to show up 4 times 
+                            #--if the user makes a query that compares it 4 times in 4 separate queries
+                            if (term['pk']+ '_' +term['RTYPE']) not in uniqueRTYPES: 
+                                uniqueRTYPES.append((term['pk']+ '_' +term['RTYPE']))
+                                uniqueQuery = True
+                            
+                            #We need to check whether or not this query is an AND/OR  or a null,e.g. the first one(so there is no and/or)
+                            rtype = term['RTYPE']
+                            rtypePK = term['pk']
+                            
+                            print >>sys.stderr, rtype + " :    <!----------------------------------------------------------------"
+                            #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                            # (FRAT) FormRecordAttributeType Lookups
+                            #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                            if rtype == 'FRAT':
+                                #store the record type in a new rtype list if unique
+                                if uniqueQuery: queryRTYPElist.append((rtypeCounter,'frat',rtypePK,term['LABEL'])) 
+                                rtypeCounter += 1
+                                tCounter = 0;
+                                
+                                #store stats
+                                singleQueryStats['rtype_name'] = term['LABEL']
+                                singleQueryStats['rtype_pk'] = rtypePK
+                                singleQueryStats['rtype'] = rtype
+                                termStats = []
+                                singleQueryStats['all_terms'] = termStats
+                                logging.info("TimerA"+ " : " + str(time.clock()))
+                                
+                                #Now begin modifying the SQL query which each term of each individual query
+                                #skip the term if the field was left blank
+                                if term['TVAL'] != "" or term['QCODE'] == '4':
+                                    newQuery = None
+                                    if term['ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = queriedForms.filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = queriedForms.filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = queriedForms.filter(formrecordattributevalue__record_value__exact=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = queriedForms.exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = queriedForms.filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK)#IS_NULL        
+                                        #save stats and query
+                                        term['count'] =  newQuery.count()
+                                        termStats.append(term)
+                                        queriedForms = newQuery
+                                    else:#Otherwise it's an OR statement
+                                        #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                        if   term['QCODE'] == '0': newQuery = (queryFormtype.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#CONTAINS    
+                                        elif term['QCODE'] == '1': newQuery = (queryFormtype.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#ICONTAINS                                   
+                                        elif term['QCODE'] == '2': newQuery = (queryFormtype.form_set.all().filter(formrecordattributevalue__record_value__exact=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#MATCHES EXACT                                    
+                                        elif term['QCODE'] == '3': newQuery = (queryFormtype.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#EXCLUDES                                   
+                                        elif term['QCODE'] == '4': newQuery = (queryFormtype.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK))#IS_NULL 
+                                        #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                        newQuery = newQuery.filter(flagged_for_deletion=False)
+                                        #save stats and query
+                                        term['count'] =  newQuery.count()
+                                        termStats.append(term)
+                                        queriedForms = (newQuery | queriedForms)
+                                    logging.info("TimerB"+ " : " + str(time.clock()))
+
+                                    logging.info("TimerC"+ " : " + str(time.clock()))
+                            #########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$     
+                            # (FRRT) FormRecordReferenceType Lookups            
+                            # This is where things can get complicated. I've added a 'deep' search -- or the ability to search fields from a related model
+                            # --Right now, this just looks at the form IDs of the related field and looks for matches--it will still need to do that, but
+                            # --it also needs to be able to look up FRAT or FRRTs in the same field--that will essentially double the code for this blocks
+                            # --to do all of this, and will also cause the time of the query to significantly increase because we are doing another JOIN in the
+                            # --SQL lookup to span this relationship. This won't affect the list of queried forms directly--they will be limited by what the
+                            # --query finds obviously--but the user will only see the column for the related FRRT that had a match--not specifically the field that matched
+                            # ----It WILL affect the counts for the graphs etc.
+                            #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$#########################################$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+                            elif rtype == 'FRRT':
+                                #store the record type in a new rtype list if unique
+                                if uniqueQuery: queryRTYPElist.append((rtypeCounter,'frrt',rtypePK,term['LABEL'])) 
+                                rtypeCounter += 1
+                                tCounter = 0;
+                                
+                                #store stats
+                                singleQueryStats['rtype_name'] = term['LABEL']
+                                singleQueryStats['rtype_pk'] = rtypePK
+                                singleQueryStats['rtype'] = rtype
+                                termStats = []
+                                singleQueryStats['all_terms'] = termStats
+                                #get the deep values
+                                deepPK, deepRTYPE = term['RTYPE-DEEP'].split('__')
+                                print >>sys.stderr, deepPK + "  :  " + deepRTYPE + " <!-------------------------------------------"
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE JUST LOOKING UP THE RTYPE FORM ID
+                                #==========================================================================================================================================================================================
+                                #TODO: This also needs to check external reference values if no match is found
+                                if deepRTYPE == 'FORMID':
+                                    print >> sys.stderr, "WTF"
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        if term['ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__icontains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__exact=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = queriedForms.exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = queriedForms.filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK) #IS_NULL        
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = newQuery
+                                        else:#Otherwise it's an OR statement
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = (queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = (queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__icontains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = (queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__exact=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = (queryFormtype.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = (queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK))#IS_NULL 
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = (newQuery | queriedForms)
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE LOOKING UP THE RELATIONS FRAT
+                                #==========================================================================================================================================================================================
+                                elif deepRTYPE == 'FRAT':
+                                    print >>sys.stderr, "We should be here"
+                                    #grab the formtype in question
+                                    deepFormType = FormType.objects.filter(pk=FormRecordAttributeType.objects.get(pk=deepPK).form_type.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    deepFormType = deepFormType[0]
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        #----------------------------------------------------------
+                                        # AND STATEMENT FOR A --TERM--
+                                        if term['ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            #First we Get a flattened list of form pk values from the deepFormType
+                                            #Then we filter our current formtype queryset's frrt manytomany pks by the pk value list just created 
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = newQuery
+                                        #--------------------------------------------------------
+                                        # OR STATEMENT FOR a --TERM--
+                                        else:
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)    
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = (newQuery | queriedForms)                            
+                                #==========================================================================================================================================================================================
+                                # IF WE ARE LOOKING UP THE RELATION'S FRRT(Only form ID allowed)
+                                #==========================================================================================================================================================================================
+                                elif deepRTYPE == 'FRRT':
+                                    print >>sys.stderr, "We should be here 3"
+                                    #grab the formtype in question
+                                    deepFormType = FormType.objects.get(pk=FormRecordReferenceType.objects.get(pk=deepPK).form_type_parent.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        #----------------------------------------------------------
+                                        # AND STATEMENT FOR A --TERM--
+                                        if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            #First we Get a flattened list of form pk values from the deepFormType
+                                            #Then we filter our current formtype queryset's frrt manytomany pks by the pk value list just created 
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #CONTAINS 
+                                                print >>sys.stderr, "LOOK HERE ROBERT"
+                                                print >>sys.stderr, flattenedSet
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXACT MATCH
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXCLUDES   
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #IS NULL  
+                                                newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                                   
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = newQuery
+                                        #--------------------------------------------------------
+                                        # OR STATEMENT FOR a --TERM--
+                                        else:
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #CONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '1': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXACT MATCH
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL']).values_list('pk', flat=True)) #EXCLUDES 
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif term['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #IS NULL
+                                                newQuery = queryFormtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)    
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = (newQuery | queriedForms)            
+
+                            #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                            # (Form ID) Lookups
+                            #########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&########################################&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+                            elif rtype == "FORMID":
+                                    tCounter = 0;
+                                    #store stats
+                                    singleQueryStats['rtype_name'] = term['LABEL']
+                                    singleQueryStats['rtype_pk'] = rtypePK
+                                    singleQueryStats['rtype'] = rtype
+                                    termStats = []
+                                    singleQueryStats['all_terms'] = termStats
+                                    logging.info("TimerD"+ " : " + str(time.clock()))
+
+                                    #Now begin modifying the SQL query which each term of each individual query
+                                    #skip the term if the field was left blank
+                                    if term['TVAL'] != "" or term['QCODE'] == '4':
+                                        newQuery = None
+                                        print >>sys.stderr, str(queryFormtype.form_set.all().filter(form_name__contains=term['TVAL']))
+                                        if term['T-ANDOR'] != 'or':#We can assume it is an AND like addition if it's anything but 'or'
+                                            print >> sys.stderr, "Is it working?"
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = queriedForms.filter(form_name__contains=term['TVAL']) #CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = queriedForms.filter(form_name__icontains=term['TVAL']) #ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = queriedForms.filter(form_name__exact=term['TVAL'])#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = queriedForms.exclude(form_name__contains=term['TVAL'])#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = queriedForms.filter(form_name__isnull=True) #IS_NULL        
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = newQuery
+                                        else:#Otherwise it's an OR statement
+                                            #Now let's figure out the QCODE, e.g. contains, match exact etc.
+                                            if   term['QCODE'] == '0': newQuery = (queryFormtype.form_set.all().filter(form_name__contains=term['TVAL']))#CONTAINS    
+                                            elif term['QCODE'] == '1': newQuery = (queryFormtype.form_set.all().filter(form_name__icontains=term['TVAL']))#ICONTAINS                                   
+                                            elif term['QCODE'] == '2': newQuery = (queryFormtype.form_set.all().filter(form_name__exact=term['TVAL']))#MATCHES EXACT                                    
+                                            elif term['QCODE'] == '3': newQuery = (queryFormtype.form_set.all().exclude(form_name__contains=term['TVAL']))#EXCLUDES                                   
+                                            elif term['QCODE'] == '4': newQuery = (queryFormtype.form_set.all().filter(form_name__isnull=True))#IS_NULL 
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)    
+                                            #save stats and query
+                                            term['count'] =  newQuery.count()
+                                            termStats.append(term)
+                                            queriedForms = (newQuery | queriedForms)
+                    
+                            queryList.append(singleQueryStats)    
+                            masterQuery = queriedForms 
+
+                            singleQueryStats['ANDOR'] = term['ANDOR']
+                            singleQueryStats['count'] = masterQuery.count()
+
+                            queryStats['count'] = singleQueryStats['count']
+
+
+
+                        
+                        #Send a message to our AJAX request object
+                        progressData.jsonString = '{"message":"Running raw SQL","current_query":"","current_term":"''","percent_done":"50","is_complete":"False"}'
+                        progressData.save()                 
+                       
+                       
+                        jsonStats = json.dumps(queryStats)
+                        #Send a message to our AJAX request object
+                        progressData.jsonString = '{"message":"Loading Queried Forms & Sending generated stats now...","current_query":"","current_term":"''","percent_done":"60","is_complete":"False","stats":'+jsonStats+'}'
+                        progressData.save()                    
+
+                        #Now make sure our final queried list has distint values--merging querysets has a tendency to create duplicates
+                        masterQuery = masterQuery.distinct()
+                        #***RECYCLING BIN*** A Final redundant recycling bin filter--just to be safe
+                        masterQuery = masterQuery.filter(flagged_for_deletion=False)                      
+
+                        #We need to check the # of rtypes in our header list now--if it's less than 5, then let's add from the ordered list
+                        #We also need to make sure we aren't adding duplicates of the RTYPES, e.g. if we're looking for a match under "Object Number" and Object Number is already
+                        #--in our sorted order-num list--let's not re-add it.
+                        for attType in form_att_type_list:
+                            print >>sys.stderr, "AttTypeList:  " + str(attType)
+                            matchfound = False;
+                            for queryAttType in queryRTYPElist:
+                                if attType[2] == queryAttType[2]:
+                                    matchfound = True
+                            if matchfound == False:    
+                                #let's arbitrarily add '100' to the order number so that our queries are definitely in front of these
+                                queryRTYPElist.append((attType[0] + 100,attType[1],attType[2],attType[3]))
+                                
+                        for q in queryRTYPElist:
+                            print >>sys.stderr, "QTypeList:  " + str(q)
+
+
+                        
+                        #serializeTest = serializers.serialize("json", masterQuery)         
+                        queryCounter = 0
+                        logging.info("TEST A")
+                        total = queryStats['count']
+                        paginationTotal = total
+                        logging.info("TEST A END")
+                        
+                        print >>sys.stderr, "TIMER HOHOHOHOOHOHOHO  START"
+                        #We need to grab ALL the form pk values in a similarly sorted list 
+                        paginationQuery = masterQuery.order_by('sort_index')
+                        paginationFormList = []
+                        if paginationQuery:
+                            for form in paginationQuery:
+                                paginationFormList.append(form.pk)
+                        #print >>sys.stderr, paginationFormList
+                        print >>sys.stderr, "TIMER HOHOHOHOOHOHOHO  END"
+                        
+                        #-----------------------------------------------------------------------------------------------------------
+                        # Here we need to determine whether or not the form type being queried is hierchical.
+                        #   --If it is hierachical, then we just organize the masterQuery and sort it with the hierachy in mind
+                        #   --as well as with its hierchical labels--otherwise just perform a normal sort by its label
+                        if queryFormtype.is_hierarchical:
+                            global hierarchyFormList
+                            hierarchyFormList = []
+                            #Finally let's organize all of our reference and attribute values to match their provided order number
+                            #We want to find all the forms that have no parent element first--these are the top of the nodes
+                            #Then we'll organize the forms by hierarchy--which can then be put through the normal ordered query
+                            masterQuery =  masterQuery.filter(hierarchy_parent=None).exclude(form_number=None, form_name=None)[:25]
+                            #CACHE -- this caches the query for the loop
+                            if masterQuery:
+                                for aForm in masterQuery: 
+                                    
+                                    queryCounter += 1
+                                    Qpercent = ( queryCounter * (30/(total*1.0)))
+                                    finalPercent = (60 + int(Qpercent))
+                                    progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":'+jsonStats+'}'
+                                    progressData.save()
+                                    logging.info(aForm.form_name)
+                                    hierarchyFormList.append(aForm)
+                                    #Make a recursive function to search through all children
+                                    def find_children(currentParentForm):          
+                                        global hierarchyFormList
+                                        for currentChild in currentParentForm.form_set.all(): 
+                                            hierarchyFormList.append(currentChild)
+                                            find_children(currentChild)
+                                    find_children(aForm)
+                            #reset our masterQuery to our new hierachical list!
+                            masterQuery = hierarchyFormList
+                        else:             
+                            #sort the formlist by their sort_index
+                            masterQuery = masterQuery.order_by('sort_index')[:25]
+                            
+                            
+                        #print >>sys.stderr, masterQuery  
+                        #CACHE -- This cache's the query before looping through it
+                        if masterQuery:
+                            for aForm in masterQuery:
+                                queryCounter += 1
+                                Qpercent = ( queryCounter * (30/(total*1.0)))
+                                finalPercent = (60 + int(Qpercent))
+                                progressData.jsonString = '{"SQL":"True","message":"Loading Queried Forms!","current_query":"'+ str(queryCounter) +'","current_term":"'+ str(total) +'","percent_done":"' + str(finalPercent) + '","is_complete":"False","stats":'+jsonStats+'}'
+                                progressData.save()
+                                print >>sys.stderr, str(aForm.pk) + ":  <!-- Current Form Pk"
+                                rowList = []
+                                #Let's loop through each item in the queryRTYPE list and match up the frav's in each queried form so the headers match the form attribute values
+                                for rtype in queryRTYPElist:
+                                    if rtype[1] == 'frat':
+                                        print >>sys.stderr, str(rtype[2]) + '  ' + str(aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2]).count())
+                                        formRVAL = aForm.formrecordattributevalue_set.all().filter(record_attribute_type__pk=rtype[2])
+                                        #We need to check for NULL FRAV's here. When a user manually creates new forms, they don't always have FRAVS created for them if they leave it blank
+                                        if formRVAL.exists():
+                                            rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
+                                        else:
+                                            print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
+                                            #If there isn't an RVAL for this RTYPE then make a new one and return it instead
+                                            newFRAV = FormRecordAttributeValue()
+                                            newFRAV.record_attribute_type = FormRecordAttributeType.objects.get(pk=rtype[2])
+                                            newFRAV.form_parent = aForm
+                                            newFRAV.project = aForm.project
+                                            newFRAV.record_value = ""
+                                            newFRAV.save()
+                                            rowList.append((rtype[0],'frav',newFRAV.record_value, newFRAV.pk))
+                                    else:
+                                        print >>sys.stderr, aForm.ref_to_parent_form.all().count()
+                                        print >>sys.stderr, aForm.pk
+                                        for frrt in aForm.ref_to_parent_form.all():
+                                            print >>sys.stderr, "" + str(frrt.pk)
+                                        formRVAL = aForm.ref_to_parent_form.all().filter(record_reference_type__pk=rtype[2])
+                                        if formRVAL.exists():
+                                            formRVAL = formRVAL[0]
+                                            #First check to see if there are any relations stored in the many to many relationship
+                                            #   --if there are, then load them normally, and if not change the value to a frrv-ext tag and store the external ID for the
+                                            #   --ajax request to process properly
+                                            if formRVAL.record_reference.all().count() > 0:
+                                                #we need to store a list of its references--it's a manytomany relationship
+                                                #A comma should be sufficient to separate them, but to be safe--we'll make our delimeter a ^,^
+                                                #-- we also need to provide the formtype pk value for the link
+                                                listOfRefs = ""
+                                                for rec in formRVAL.record_reference.all():
+                                                    listOfRefs += str(rec) + '|^|' + str(rec.form_type.pk) + '|^|' + str(rec.pk) + "^,^"
+                                                #remove the last delimeter
+                                                listOfRefs = listOfRefs[0:-3]
+                                                rowList.append((rtype[0],'frrv',listOfRefs, formRVAL.pk))
+                                            else:
+                                                #Store the external key value instead and change it to a frrv-ext for the AJAX callable
+                                                rowList.append((rtype[0],'frrv-ext',formRVAL.external_key_reference, formRVAL.pk))
+                                        else:
+                                            #Store the external key value instead and change it to a frrv-null for the AJAX callable
+                                            rowList.append((rtype[0],'frrv-null',"", ""))
+
+                               
+                                #sort the new combined reference ad attribute type list combined
+                                rowList = sorted(rowList, key=lambda att: att[0])
+                                print >> sys.stderr, str(rowList)
+                                #Now let's handle the thumbnail bit of business for the query
+                                #--If the current form IS a media type already, then use itself to grab the thumbnail URI
+                                if aForm.form_type.type == 1:
+                                    thumbnailURI = aForm.get_thumbnail_type()
+                                else:
+                                    #let's find the first media type in the order but offer a default to "NO PREVIEW" if not found
+                                    thumbnailURI = staticfiles_storage.url("/static/site-images/no-thumb-missing.png")
+                                    for record in rowList:            
+                                        #if it's a reference
+                                        if record[1] == 'frrv' or record[1] == 'frrv-ext':
+                                            currentRTYPE = FormRecordReferenceValue.objects.get(pk=int(record[3]))
+                                            #if it's not a NoneType reference:
+                                            if currentRTYPE.record_reference_type.form_type_reference != None:
+                                                #If its a reference to a media type
+                                                if currentRTYPE.record_reference_type.form_type_reference.type == 1:
+                                                    print >> sys.stderr, "WE GOT A MATCH"
+                                                    #Because a form record reference value is a ManyToMany relationship, we just grab the first one in the list
+                                                    #TODO this may need to be edited later--because you can't order the selections. I may add another ForeignKey called
+                                                    #"Thumbnail Reference" which links to a single relation to a form of a media type--this would also
+                                                    #probably solve the complexity of looping through to grab it as it stands right now
+                                                    #****WE also have to check for NULL references
+                                                    if currentRTYPE.record_reference.all().count() > 0:
+                                                        thumbnailURI = currentRTYPE.record_reference.all()[0].get_thumbnail_type()
+                                                    break
+                                            
+                                #we only want the first 5 values from the final ordered list of attributes
+                                #rowList = rowList[0:5]
+
+
+                                formList.append([thumbnailURI,str(aForm.pk), aForm, rowList])   
+                                
+                        form_att_type_list, form_list = form_att_type_list, formList
+                        
+                        #update our progress bar
+                        progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"90","is_complete":"False","stats":'+jsonStats+'}'
+                        progressData.save() 
+                        
+                        finishedJSONquery = {}
+                        
+                        headerList=[]
+                        for rtype in queryRTYPElist:
+                            rtypeDict = {}
+                            rtypeDict["index"] = rtype[0]
+                            rtypeDict["rtype"] = rtype[1]
+                            rtypeDict["pk"] = rtype[2]
+                            rtypeDict["name"] = rtype[3]
+                            headerList.append(rtypeDict)
+
+                        #update our progress bar
+                        progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"93","is_complete":"False","stats":'+jsonStats+'}'
+                        progressData.save() 
+                        
+                        finishedJSONquery["rtype_header"] = headerList
+                        allFormList = []
+                        counter = 0
+                        total = len(formList)
+                        for form in formList:
+                            #update our progress bar
+                            counter += 1
+                            currentPercent = 93 + int((counter*(5.0/total)))
+                            progressData.jsonString = '{"message":"Packaging Query for User","current_query":"","current_term":"","percent_done":"'+str(currentPercent)+'","is_complete":"False","stats":'+jsonStats+'}'
+                            progressData.save() 
+                            
+                            formDict = {}
+                            formDict["thumbnail_URI"] = form[0]
+                            formDict["pk"] = form[1]
+                            if queryFormtype.is_hierarchical: formDict["form_id"] = form[2].get_hierarchy_label()
+                            else: formDict["form_id"] = form[2].form_name
+                            formRVALS = []
+                            for rval in form[3]:
+                                rvalDict = {}
+                                rvalDict["index"] = rval[0]
+                                rvalDict["rtype"] = rval[1]
+                                rvalDict["value"] = rval[2]
+                                rvalDict["pk"] = rval[3]
+                                formRVALS.append(rvalDict)
+                            formDict["rvals"] = formRVALS
+                            allFormList.append(formDict)
+
+                        
+                        finishedJSONquery["form_list"] = allFormList
+                        finishedJSONquery["currentQuery"] = request.POST['master_query']
+                        finishedJSONquery["totalResultCount"] = paginationTotal
+                        finishedJSONquery['formtype'] = query['formtype_label']
+                        finishedJSONquery['formtype_pk'] = query['formtype_pk']
+                        finishedJSONquery['project'] = query['project_label']
+                        finishedJSONquery['project_pk'] = query['project_pk']
+                        finishedJSONquery['pagination_form_list'] = paginationFormList
+                        finishedJSONquery['query_stats'] = queryStats
+                        all_project_queries.append(finishedJSONquery)
+                        
+                #convert to JSON
+                all_project_queries = json.dumps(all_project_queries)
+
+                #Update our progress bar
+                progressData.jsonString = '{"message":"Finished!","current_query":"","current_term":"","percent_done":"100","is_complete":"True","stats":''}'
+                progressData.save() 
+                print >>sys.stderr,  "Timer End"     
+                return HttpResponse(all_project_queries, content_type="application/json")
+
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access querying this project"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")   
+    
 
     #=======================================================#
-    #   ACCESS LEVEL :  1       RUN_QUERY_ENGINE()
+    #   ACCESS LEVEL :  1       RUN_QUERY_ENGINE() *Recycling
     #=======================================================#   
     def run_query_engine(self, request):
         #***************#
@@ -2607,11 +5663,14 @@ class MyAdminSite(AdminSite):
                     #First let's setup our header field of ordered labels 
                     print >>sys.stderr,  "Timer Start"                
                     form_att_type_list = []
-                    for attType in formtype.formrecordattributetype_set.all().order_by('order_number')[:5]:
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for attType in formtype.formrecordattributetype_set.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
                         form_att_type_list.append((attType.order_number,'frat',attType.pk,attType.record_type)) 
-                        #form_att_type_list.append((attType.order_number,'frat',attType))                    
-                    for refType in formtype.ref_to_parent_formtype.all().order_by('order_number')[:5]:
+             
+                    #***RECYCLING BIN*** Make sure our RTYPES are filtered by their deletion flags
+                    for refType in formtype.ref_to_parent_formtype.all().filter(flagged_for_deletion=False).order_by('order_number')[:5]:
                         form_att_type_list.append((refType.order_number,'frrt',refType.pk,refType.record_type)) 
+
                     #sort the new combined reference ad attribute type list combined
                     form_att_type_list = sorted(form_att_type_list, key=lambda att: att[0])
                     #we only want the first 5 types
@@ -2644,6 +5703,8 @@ class MyAdminSite(AdminSite):
                         singleQueryStats = {} 
                         
                         queriedForms = formtype.form_set.all()
+                        #***RECYCLING BIN*** Make sure our Forms are filtered by their deletion flags
+                        queriedForms.filter(flagged_for_deletion=False)
                         currentJSONQuery = masterQueryJSON['query_list'][query]
                         
                         uniqueQuery = False
@@ -2699,6 +5760,8 @@ class MyAdminSite(AdminSite):
                                         elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__exact=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#MATCHES EXACT                                    
                                         elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(formrecordattributevalue__record_value__contains=term['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK))#EXCLUDES                                   
                                         elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK))#IS_NULL 
+                                        #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                        newQuery = newQuery.filter(flagged_for_deletion=False)
                                         #save stats and query
                                         term['count'] =  newQuery.count()
                                         termStats.append(term)
@@ -2771,6 +5834,8 @@ class MyAdminSite(AdminSite):
                                             elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__form_name__exact=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#MATCHES EXACT                                    
                                             elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=term['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK))#EXCLUDES                                   
                                             elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK))#IS_NULL 
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)
                                             #save stats and query
                                             term['count'] =  newQuery.count()
                                             termStats.append(term)
@@ -2781,7 +5846,10 @@ class MyAdminSite(AdminSite):
                                 elif deepRTYPE == 'FRAT':
                                     print >>sys.stderr, "We should be here"
                                     #grab the formtype in question
-                                    deepFormType = FormType.objects.get(pk=FormRecordAttributeType.objects.get(pk=deepPK).form_type.pk)
+                                    deepFormType = FormType.objects.filter(pk=FormRecordAttributeType.objects.get(pk=deepPK).form_type.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    deepFormType = deepFormType[0]
                                     #Now begin modifying the SQL query which each term of each individual query
                                     #skip the term if the field was left blank
                                     if term['TVAL'] != "" or term['QCODE'] == '4':
@@ -2807,7 +5875,6 @@ class MyAdminSite(AdminSite):
                                             elif term['QCODE'] == '4': 
                                                 flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
                                                 newQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
-                                                   
                                             #save stats and query
                                             term['count'] =  newQuery.count()
                                             termStats.append(term)
@@ -2831,6 +5898,8 @@ class MyAdminSite(AdminSite):
                                             elif term['QCODE'] == '4': 
                                                 flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=deepPK).values_list('pk', flat=True)) #CONTAINS    
                                                 newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)    
                                             #save stats and query
                                             term['count'] =  newQuery.count()
                                             termStats.append(term)
@@ -2841,7 +5910,10 @@ class MyAdminSite(AdminSite):
                                 elif deepRTYPE == 'FRRT':
                                     print >>sys.stderr, "We should be here 3"
                                     #grab the formtype in question
-                                    deepFormType = FormType.objects.get(pk=FormRecordReferenceType.objects.get(pk=deepPK).form_type_parent.pk)
+                                    deepFormType = FormType.objects.filter(pk=FormRecordReferenceType.objects.get(pk=deepPK).form_type_parent.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    deepFormType = deepFormType[0]
                                     #Now begin modifying the SQL query which each term of each individual query
                                     #skip the term if the field was left blank
                                     if term['TVAL'] != "" or term['QCODE'] == '4':
@@ -2893,6 +5965,8 @@ class MyAdminSite(AdminSite):
                                             elif term['QCODE'] == '4': 
                                                 flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #IS NULL
                                                 newQuery = formtype.form_set.all().filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                            newQuery = newQuery.filter(flagged_for_deletion=False)    
                                             #save stats and query
                                             term['count'] =  newQuery.count()
                                             termStats.append(term)
@@ -2940,6 +6014,8 @@ class MyAdminSite(AdminSite):
                                         elif term['QCODE'] == '2': newQuery = (formtype.form_set.all().filter(form_name__exact=term['TVAL']))#MATCHES EXACT                                    
                                         elif term['QCODE'] == '3': newQuery = (formtype.form_set.all().exclude(form_name__contains=term['TVAL']))#EXCLUDES                                   
                                         elif term['QCODE'] == '4': newQuery = (formtype.form_set.all().filter(form_name__isnull=True))#IS_NULL 
+                                        #***RECYCLING BIN*** Make sure our NEW query is always filtered by recycling bin flags--All OR statements will need this filter
+                                        newQuery = newQuery.filter(flagged_for_deletion=False)    
                                         #save stats and query
                                         term['count'] =  newQuery.count()
                                         termStats.append(term)
@@ -2996,6 +6072,7 @@ class MyAdminSite(AdminSite):
                         counter = 0
                         total = len(masterQueryJSON['constraint_list'])
                         for aConstraint in masterQueryJSON['constraint_list']:
+                            print >>sys.stderr, aConstraint
                             logging.info("TimerY START" + " : " + str(time.clock()))
                             constraint = masterQueryJSON['constraint_list'][aConstraint]
                             #Send our progresss update message
@@ -3020,19 +6097,71 @@ class MyAdminSite(AdminSite):
                                     elif constraint['QCODE'] == '2': constraintQuery = queriedForms.filter(formrecordattributevalue__record_value__exact=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#MATCHES EXACT                                    
                                     elif constraint['QCODE'] == '3': constraintQuery = queriedForms.exclude(formrecordattributevalue__record_value__icontains=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK)#EXCLUDES                                   
                                     elif constraint['QCODE'] == '4': constraintQuery = queriedForms.filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK)#IS_NULL       
-                                    logging.info("TimerZ END" + "-- : " + str(time.clock()))
-                                elif rtype == 'FRRT':
-                                    if   constraint['QCODE'] == '0': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__contains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#CONTAINS    
-                                    elif constraint['QCODE'] == '1': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__icontains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#ICONTAINS                                   
-                                    elif constraint['QCODE'] == '2': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__exact=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#MATCHES EXACT                                    
-                                    elif constraint['QCODE'] == '3': constraintQuery = queriedForms.exclude(ref_to_parent_form__record_reference__form_name__icontains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
-                                    elif constraint['QCODE'] == '4': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK).count()#IS_NULL        
-                                elif rtype == 'FRRT':
+                                    logging.info("TimerZ END" + "-- : " + str(time.clock()))  
+                                elif rtype == 'FORMID':
                                     if   constraint['QCODE'] == '0': constraintQuery = queriedForms.filter(form_name__contains=constraint['TVAL']) #CONTAINS    
                                     elif constraint['QCODE'] == '1': constraintQuery = queriedForms.filter(form_name__icontains=constraint['TVAL']) #ICONTAINS                                   
                                     elif constraint['QCODE'] == '2': constraintQuery = queriedForms.filter(form_name__exact=constraint['TVAL'])#MATCHES EXACT                                    
                                     elif constraint['QCODE'] == '3': constraintQuery = queriedForms.exclude(form_name__contains=constraint['TVAL'])#EXCLUDES                                   
-                                    elif constraint['QCODE'] == '4': constraintQuery = queriedForms.filter(form_name__isnull=True) #IS_NULL                                    
+                                    elif constraint['QCODE'] == '4': constraintQuery = queriedForms.filter(form_name__isnull=True) #IS_NULL          
+                                elif rtype == 'FRRT_ID':
+                                    deepFormType = FormType.objects.filter(pk=FormRecordReferenceType.objects.get(pk=rtypePK).form_type_parent.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    deepFormType = deepFormType[0]
+                                    if   constraint['QCODE'] == '0': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__contains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#CONTAINS    
+                                    elif constraint['QCODE'] == '1': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__icontains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#ICONTAINS                                   
+                                    elif constraint['QCODE'] == '2': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__form_name__exact=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#MATCHES EXACT                                    
+                                    elif constraint['QCODE'] == '3': constraintQuery = queriedForms.exclude(ref_to_parent_form__record_reference__form_name__icontains=constraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
+                                    elif constraint['QCODE'] == '4': constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK).count()#IS_NULL                                           
+                                elif rtype == 'DEEP_FRRT':
+                                    deepFormType = FormType.objects.filter(pk=FormRecordReferenceType.objects.get(pk=rtypePK).form_type_parent.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    deepFormType = deepFormType[0]                                
+                                    if   constraint['QCODE'] == '0': 
+                                        flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=constraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                    elif constraint['QCODE'] == '1':
+                                        flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__icontains=constraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)                                    
+                                    elif constraint['QCODE'] == '2': 
+                                        flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__exact=constraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                    elif constraint['QCODE'] == '3':
+                                        flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=constraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                    elif constraint['QCODE'] == '4': 
+                                        flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #ICONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                elif rtype == 'DEEP_FRAT':
+                                    deepFormType = FormType.objects.filter(pk=FormRecordAttributeType.objects.get(pk=rtypePK).form_type.pk)
+                                    #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                    deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                    
+                                    deepFormType = deepFormType[0]   
+                                    print >>sys.stderr, deepFormType
+                                    print >>sys.stderr, rtypePK
+                                    if   constraint['QCODE'] == '0':
+                                        flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                    elif constraint['QCODE'] == '1':
+                                        flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                        print >>sys.stderr, "WHAT?!?!?!?!  " + str(len(flattenedSet)) + "   <!--------------------------------------------------"
+                                        print >>sys.stderr, flattenedSet
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                    elif constraint['QCODE'] == '2':
+                                        flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__exact=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                    elif constraint['QCODE'] == '3': 
+                                        flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=constraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                    elif constraint['QCODE'] == '4': 
+                                        flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                        constraintQuery = queriedForms.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                               
+                               #***RECYCLING BIN*** Make sure our NEW Constraints query is always filtered by recycling bin flags
+                                constraintQuery = constraintQuery.filter(flagged_for_deletion=False)                                    
                                 singleConstraintStat['count'] = constraintQuery.count()
                                 singleConstraintStat['name'] = constraint['LABEL']
                                 singleConstraintStat['rtype_pk'] = rtypePK
@@ -3093,12 +6222,59 @@ class MyAdminSite(AdminSite):
                                             elif pConstraint['QCODE'] == '3': primaryConstraintQuery = constraintQuery.exclude(ref_to_parent_form__record_reference__form_name__icontains=pConstraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
                                             elif pConstraint['QCODE'] == '4': primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK)#IS_NULL                                                
                                             logging.info("TimerKK END" + "-- : " + str(time.clock()))
-                                        elif rtype == 'FRRT':
+                                        elif rtype == 'FORMID':
                                             if   pConstraint['QCODE'] == '0': primaryConstraintQuery = constraintQuery.filter(form_name__contains=pConstraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #CONTAINS    
                                             elif pConstraint['QCODE'] == '1': primaryConstraintQuery = constraintQuery.filter(form_name__icontains=pConstraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK) #ICONTAINS                                   
                                             elif pConstraint['QCODE'] == '2': primaryConstraintQuery = constraintQuery.filter(form_name__exact=pConstraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#MATCHES EXACT                                    
                                             elif pConstraint['QCODE'] == '3': primaryConstraintQuery = constraintQuery.exclude(form_name__contains=pConstraint['TVAL'], ref_to_parent_form__record_reference_type__pk=rtypePK)#EXCLUDES                                   
                                             elif pConstraint['QCODE'] == '4': primaryConstraintQuery = constraintQuery.filter(form_name__isnull=True, ref_to_parent_form__record_reference_type__pk=rtypePK) #IS_NULL                                      
+                                        elif rtype == 'DEEP_FRRT':
+                                            deepFormType = FormType.objects.filter(pk=FormRecordReferenceType.objects.get(pk=rtypePK).form_type_parent.pk)
+                                            #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                            deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                            deepFormType = deepFormType[0]                                
+                                            if   pConstraint['QCODE'] == '0': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__contains=pConstraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                            elif pConstraint['QCODE'] == '1':
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__icontains=pConstraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)                                    
+                                            elif pConstraint['QCODE'] == '2': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__exact=pConstraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                            elif pConstraint['QCODE'] == '3':
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(ref_to_parent_form__record_reference__form_name__contains=pConstraint['TVAL']).values_list('pk', flat=True)) #ICONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif pConstraint['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(ref_to_parent_form__record_reference__form_name__isnull=True).values_list('pk', flat=True)) #ICONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet) 
+                                        elif rtype == 'DEEP_FRAT':
+                                            deepFormType = FormType.objects.filter(pk=FormRecordAttributeType.objects.get(pk=rtypePK).form_type.pk)
+                                            #***RECYCLING BIN*** Make sure our this Deep query FormType is always filtered by recycling bin flags
+                                            deepFormType = deepFormType.filter(flagged_for_deletion=False)
+                                            
+                                            deepFormType = deepFormType[0]   
+                                            print >>sys.stderr, deepFormType
+                                            print >>sys.stderr, rtypePK
+                                            if   pConstraint['QCODE'] == '0':
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__contains=pConstraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif pConstraint['QCODE'] == '1':
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__icontains=pConstraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                                print >>sys.stderr, "WHAT?!?!?!?!  " + str(len(flattenedSet)) + "   <!--------------------------------------------------"
+                                                print >>sys.stderr, flattenedSet
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif pConstraint['QCODE'] == '2':
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__exact=pConstraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif pConstraint['QCODE'] == '3': 
+                                                flattenedSet = list(deepFormType.form_set.all().exclude(formrecordattributevalue__record_value__contains=pConstraint['TVAL'], formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                            elif pConstraint['QCODE'] == '4': 
+                                                flattenedSet = list(deepFormType.form_set.all().filter(formrecordattributevalue__record_value__isnull=True, formrecordattributevalue__record_attribute_type__pk=rtypePK).values_list('pk', flat=True)) #CONTAINS    
+                                                primaryConstraintQuery = constraintQuery.filter(ref_to_parent_form__record_reference__pk__in=flattenedSet)
+                                        #***RECYCLING BIN*** Make sure our NEW Constraints query is always filtered by recycling bin flags
+                                        primaryConstraintQuery = primaryConstraintQuery.filter(flagged_for_deletion=False)     
                                         newPData = {}
                                         newPData['data_label'] = singleConstraintStat['name'] + ' ' + singleConstraintStat['tval'] +' - ' + singleQueryStats['rtype_name'] + ' ' + singleQueryStats['all_terms'][0]['TVAL']
                                         newPData['group'] = counter
@@ -3111,10 +6287,14 @@ class MyAdminSite(AdminSite):
                     if len(primaryConstraintList) != 0:    
                         queryStats['p_constraints'] = primaryConstraintList   
                     
-                    print >>sys.stderr, str(masterQuery)                
+                    #print >>sys.stderr, str(masterQuery)                
                     #Now make sure our final queried list has distint values--merging querysets has a tendency to create duplicates
                     masterQuery = masterQuery.distinct()
-                    print >>sys.stderr, str(masterQuery)
+                    #***RECYCLING BIN*** A Final redundant recycling bin filter--just to be safe
+                    masterQuery = masterQuery.filter(flagged_for_deletion=False)
+                    
+                    
+                    #print >>sys.stderr, str(masterQuery)
                     
                     #Send a message to our AJAX request object
                     progressData.jsonString = '{"message":"Running raw SQL","current_query":"","current_term":"''","percent_done":"50","is_complete":"False"}'
@@ -3153,7 +6333,7 @@ class MyAdminSite(AdminSite):
                     paginationTotal = total
                     logging.info("TEST A END")
                     
-                    print >>sys.stderr, str(masterQuery)
+                    # print >>sys.stderr, str(masterQuery)
                     
                     
                     #-----------------------------------------------------------------------------------------------------------
@@ -3213,6 +6393,14 @@ class MyAdminSite(AdminSite):
                                         rowList.append((rtype[0],'frav',formRVAL[0].record_value, formRVAL[0].pk))
                                     else:
                                         print >>sys.stderr, "Whoops--something happened. There are no RVALS for 'frats' using: " + str(rtype[2])
+                                        #If there isn't an RVAL for this RTYPE then make a new one and return it instead
+                                        newFRAV = FormRecordAttributeValue()
+                                        newFRAV.record_attribute_type = FormRecordAttributeType.objects.get(pk=rtype[2])
+                                        newFRAV.form_parent = aForm
+                                        newFRAV.project = project
+                                        newFRAV.record_value = ""
+                                        newFRAV.save()
+                                        rowList.append((rtype[0],'frav',newFRAV.record_value, newFRAV.pk))
                                 else:
                                     print >>sys.stderr, aForm.ref_to_parent_form.all().count()
                                     print >>sys.stderr, aForm.pk
@@ -3349,252 +6537,7 @@ class MyAdminSite(AdminSite):
     
 
     #=======================================================#
-    #   ACCESS LEVEL :  2      SAVE_FORM_CHANGES()
-    #=======================================================#   
-    def save_form_changes(self, request):
-        #***************#
-        ACCESS_LEVEL = 2
-        #***************#
-        #------------------------------------------------------------------------------------------------------------------------------------
-        #:::This function edits a form. In order to maintain integrity when editing a form--we need to assume
-        #   --the worst. In this case someone may be atempting to pass a different pk into this endpoint and edit a new form there.
-        #   --this isn't terribly problematic in terms of security--if someone can access this function then they can edit any form in
-        #   --their project. We just need to make sure they can ONLY affect forms in their own project. Performing a simple check on the
-        #   --form parent pks the submitted RTYPES are child'd to should be enough to deter these shenanigans--but once again--the worst someone can
-        #   --do if hijacking this endpoint is add/change new data. They can't delete anything.
-        #------------------------------------------------------------------------------------------------------------------------------------
-        
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-            #Make sure we only take POST requests
-            if request.method == 'POST':                        
-                print >>sys.stderr, request.POST
-                post_data = request.POST
-                #$$$ SECURITY $$$ Make sure we can ONLY access this form for editing if it is within the user's project space
-                formToEdit = Form.objects.get(pk=post_data['form_id'])
-                if formToEdit.project.pk == request.user.permissions.project.pk:
-                    form_type = formToEdit.form_type
-                    #Update the form's basic attributes
-                    #Figure out if the input field is a number(int) or a string label
-                    #*I'm not particulary fond of using try/catch's to control logic, but apparently it is the
-                    #"pythonic" thing to do looking online and the Python Core uses this often it seems
-                    try:
-                        formToEdit.form_name = post_data.get('form_number')
-                        formToEdit.form_number = int(post_data.get('form_number'))
-                    except:
-                        formToEdit.form_name = post_data.get('form_number')
-                        formToEdit.form_number = None            
-                    formToEdit.form_geojson_string = post_data.get('form_geojson_string')
-                    #Update the hierchical parent reference if relevant
-                    if form_type.is_hierarchical:
-                        if post_data.get('hierarchical_reference') == 'NONE':
-                            formToEdit.hierarchy_parent = None
-                        else:
-                            formToEdit.hierarchy_parent = Form.objects.get(pk=post_data.get('hierarchical_reference'))
-
-                   
-                    for key in post_data:
-                        splitKey = key.split("__")
-                        #Update all of the form's FormRecordReferenceTypes
-                        if len(splitKey) > 1:
-                            if len(splitKey) == 2: 
-                                code,type_pk = splitKey
-                                print >> sys.stderr, "Getting Close: " + code + " : " + type_pk
-                                
-                                #Update all of the form's FormRecordAttributeValues
-                                if code == "frav":
-                                    currentValue = FormRecordAttributeValue.objects.get(pk=type_pk)
-                                    # $$$ SECURITY $$$: Before we make any changes, we need to make sure we are editing a record value that has
-                                    #   --the same project parent as the user. The user could inject pks from other projects into this and randomly
-                                    #   --attack data.
-                                    if currentValue.project.pk == request.user.permissions.project.pk:
-                                        currentValue.record_value = post_data[key]
-                                        #Add the user information
-                                        currentValue.modified_by = request.user
-                                        currentValue.save()
-                                    else:
-                                        ERROR_MESSAGE += "You have attempted to edit a form with an attribute record type that is not part of your project space."
-                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")                                         
-                                #If we're editing this particular reference
-                                elif code == "frrv":
-                                    currentReferenceValue = FormRecordReferenceValue.objects.get(pk=type_pk)
-                                    # $$$ SECURITY $$$: Before we make any changes, we need to make sure we are editing a record value that has
-                                    #   --the same project parent as the user. The user could inject pks from other projects into this and randomly
-                                    #   --attack data.
-                                    if currentReferenceValue.project.pk == request.user.permissions.project.pk:
-                                        #first clear the manytomany field
-                                        currentReferenceValue.record_reference.clear()
-                                        #loop through all available selections and add them to the manytomany field
-                                        for reference in post_data.getlist(key):
-                                            print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
-                                            #make sure we add a null check here--the user might not have chosen a referenced form
-                                            if reference != '':
-                                                currentReferenceValue.record_reference.add(Form.objects.get(pk=reference))
-                                            print >> sys.stderr, str(currentReferenceValue.record_reference) + "  <!----- ADDED THIS REF"
-                                        #Add the user information
-                                        currentReferenceValue.modified_by = request.user    
-                                        currentReferenceValue.external_key_reference = request.POST['frrv__'+type_pk+'__ext']                                        
-                                        #save the reference value
-                                        currentReferenceValue.save()  
-                                    else:
-                                        ERROR_MESSAGE += "You have attempted to edit a form with a reference record type that is not part of your project space."
-                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")  
-                                elif code == "frrvNEW":
-                                    #If there isa 'new' FRRV needed, that means the formtype was created manually and not through the csv importer. This is fine, we just
-                                    #need to make a new one now and add the necessary attributes to it.
-                                    newFRRV = FormRecordReferenceValue()
-                                    newFRRV.project = request.user.permissions.project
-                                    newFRRV.created_by = request.user
-                                    newFRRV.modified_by = request.user
-                                    newFRRV.record_reference_type = FormRecordReferenceType.objects.get(pk=type_pk)
-                                    newFRRV.form_parent = formToEdit
-                                    newFRRV.external_key_reference = request.POST['frrvNEW__'+type_pk+'__ext']
-                                    #We have to save the new FRRV to the SQL database before adding new references I think
-                                    newFRRV.save()
-                                    for reference in post_data.getlist(key):
-                                        print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
-                                        #make sure we add a null check here--the user might not have chosen a referenced form
-                                        if reference != '':
-                                            newFRRV.record_reference.add(Form.objects.get(pk=reference))
-                                        print >> sys.stderr, str(newFRRV.record_reference) + "  <!----- ADDED THIS REF"   
-                                    newFRRV.save()
-                    # If we've managed to get this far, then save the form changes. Otherwise some error occured and nothing should be saved
-                    #   --in order to maintain database integrity -- this will still not affect individual values--but it will stop some things from changing.
-                    #Add the user information
-                    formToEdit.modified_by = request.user
-                    formToEdit.save()
-                    #SUCCESS!!
-                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json") 
-                ERROR_MESSAGE += "Error: You are attempting to access a form outside your project space!"                            
-            ERROR_MESSAGE += "Error: You have not submitted through POST"
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
-
-        
-    #=======================================================#
-    #   ACCESS LEVEL :  2       CREATE_NEW_FORM()
-    #=======================================================#      
-    def create_new_form(self, request):
-        #***************#
-        ACCESS_LEVEL = 2
-        #***************#
-        #------------------------------------------------------------------------------------------------------------------------------------
-        #:::This function creates a new form of the given form type. In order to maintain integrity when creating a new form--we need to assume
-        #   --the worst. In this case someone may be atempting to pass a different form-type pk into this endpoint and create a new form there.
-        #   --this isn't terribly problematic in terms of security--if someone can access this function then they can edit any form type in
-        #   --their project. We just need to make sure they can ONLY affect form types in their own project. Performing a simple check on the
-        #   --form_type the submitted RTYPES are child'd to should be enough to deter these shenanigans--but once again--the worst someone can
-        #   --do if hijacking this endpoint is add new data. They can't delete anything.
-        #------------------------------------------------------------------------------------------------------------------------------------
-        
-        ERROR_MESSAGE = ""
-        
-        #Check our user's session and access level
-        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
-            #Make sure we only take POST requests
-            if request.method == 'POST':      
-                #Create New Form with formtype
-                post_data = request.POST
-                form_type = FormType.objects.get(pk=post_data['formtype_id'])
-                #Make sure we're in the user's allowed project space
-                if form_type.project.pk == request.user.permissions.project.pk:
-                    newform = Form(form_name='', form_number=post_data.get('form_number'), form_geojson_string=post_data.get('form_geojson_string'))
-                    newform.form_type=form_type 
-
-                    #Add the user information - We only set created by in endpoints that create the model for the first time
-                    newform.created_by = request.user
-                    newform.modified_by = request.user
-                
-                    #Figure out if the input field is a number(int) or a string label
-                    #"pythonic" thing to do looking online and the Python Core uses this often it seems
-                    #*I'm not particulary fond of using try/catch's to control logic, but apparently it is the Python way
-                    try:
-                        newform.form_name = post_data.get('form_number')
-                        newform.form_number = int(post_data.get('form_number'))
-                    except:
-                        newform.form_name = post_data.get('form_number')
-                        newform.form_number = None    
-                    #Update the hierchical parent reference if relevant
-                    if form_type.is_hierarchical:
-                        if post_data.get('hierarchical_reference') == 'NONE':
-                            newform.hierarchy_parent = None
-                        else:
-                            newform.hierarchy_parent = Form.objects.get(pk=post_data.get('hierarchical_reference'))
-                    #save the form
-                    newform.save()
-                    
-                    print >> sys.stderr, request.POST
-                    #Now we need to create all the attributes from the form input
-                    for key in post_data:
-                        splitKey = key.split("__")
-                        if len(splitKey) > 1:
-                            if len(splitKey) == 2: 
-                            
-                                code,type_pk = splitKey
-                                print >> sys.stderr, "Getting Close: " + code + " : " + type_pk
-                                if code == "frat":
-                                    currentFRAT = FormRecordAttributeType.objects.get(pk=type_pk)
-                                    #$$$ SECURITY $$$ -- We need make sure they are trying to add rtype values that are attached to this project
-                                    #if they are not, then show an error page and delete this current form.
-                                    if currentFRAT.project.pk == request.user.permissions.project.pk:
-                                        newformrecordattributevalue = FormRecordAttributeValue(record_value = post_data[key])
-                                        newformrecordattributevalue.form_parent=newform
-                                        newformrecordattributevalue.record_attribute_type=currentFRAT
-                                        #Add the user information - We only set created by in endpoints that create the model for the first time
-                                        newformrecordattributevalue.created_by = request.user
-                                        newformrecordattributevalue.modified_by = request.user
-                                        newformrecordattributevalue.save()
-                                    else:
-                                        newform.delete()
-                                        ERROR_MESSAGE += "You have attempted to add a form with a attribute record type that is not part of your project space."
-                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")     
-                                #Create all references from the form input
-                                elif code == "frrvNEW":
-                                    currentFRRT = FormRecordReferenceType.objects.get(pk=type_pk)
-                                    #$$$ SECURITY $$$ -- We need make sure they are trying to add rtype values that are attached to this project
-                                    #if they are not, then show an error page and delete this current form.
-                                    if currentFRRT.project.pk == request.user.permissions.project.pk:
-                                        newFRRV = FormRecordReferenceValue()
-                                        newFRRV.project = request.user.permissions.project
-                                        newFRRV.created_by = request.user
-                                        newFRRV.modified_by = request.user
-                                        newFRRV.record_reference_type = currentFRRT
-                                        newFRRV.form_parent = newform
-                                        newFRRV.external_key_reference = request.POST['frrvNEW__'+type_pk+'__ext']
-                                        #We have to save the new FRRV to the SQL database before adding new references I think
-                                        newFRRV.save()
-                                        for reference in post_data.getlist(key):
-                                            print >> sys.stderr, reference + "  <!----- ADDING THIS REF"
-                                            #make sure we add a null check here--the user might not have chosen a referenced form
-                                            if reference != '':
-                                                newFRRV.record_reference.add(Form.objects.get(pk=reference))
-                                            print >> sys.stderr, str(newFRRV.record_reference) + "  <!----- ADDED THIS REF"   
-                                        newFRRV.save()
-                                    else:
-                                        newform.delete()
-                                        ERROR_MESSAGE += "You have attempted to add a form with a reference record type that is not part of your project space."
-                                        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-                                        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")     
-                    #SUCCESS!!
-                    return HttpResponse('{"MESSAGE":"SUCCESS!"}',content_type="application/json")   
-                ERROR_MESSAGE += "Error: You do not have permission to accesss this project."
-            else: ERROR_MESSAGE += "Error: You have not submitted through POST"
-        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
-        #If anything goes wrong in the process, return an error in the json HTTP Response
-        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
-        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")      
-    
-          
-
-    #=======================================================#
-    #   ACCESS LEVEL :  1       GET_FORM_RTYPES()                !!!TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    #   ACCESS LEVEL :  1       GET_FORM_RTYPES()  *Recycling           
     #=======================================================#    
     def get_form_rtypes(self, request):
         #***************#
@@ -3608,14 +6551,15 @@ class MyAdminSite(AdminSite):
         #                                               {"rtype_pk":    "1",
         #                                                "rtype_label": "Object Shape",
         #                                                "rtype":       "FRAT",
-        #                                                "rval":    "Spherical",
-        #                                                "rv": "1"
+        #                                                "rval":    {"Spherical":"<pk#>"}, <-- This will similarly be a json object with 1 key/val pair
+        #                                                
         #                                               },
         #                                               {"rtype_pk":    "6",
         #                                                "rtype_label": "Associated Unit",
         #                                                "rtype":       "FRRT",
-        #                                                "rval":    "Spherical",    <-- This is a delimited list of pk values ?
-        #                                                "ext_key": "1"  TODO : Figure this out still!
+        #                                                "rval":    {"Unit 1":"<pk#>", "Unit 2":"<pk#>"},    <-- if this is a frrt, then this will be another json object of key/val pairs 
+        #                                                "ext_key": "1,2"  <-- This is just the raw ext key string
+        #                                                "thumbnail":"www.geioh.coms/hoidjjds.jpg"
         #                                               },
         #                                         ]}
         #
@@ -3635,7 +6579,72 @@ class MyAdminSite(AdminSite):
                     jsonData = {}
                     rtype_list = []
                     jsonData['rtype_list'] = rtype_list
-                    #TODO: Under Construction
+                    
+                    #Alright--let's load our RTYPEs from the current Form requested
+                    #*** RECYCLING BIN *** Let's filter them out by their recycling flags as well
+                    frav_list = currentForm.formrecordattributevalue_set.all().filter(flagged_for_deletion=False)
+                    frrv_list = currentForm.ref_to_parent_form.all().filter(flagged_for_deletion=False)
+                    
+                    #If Statement forces evaluation of the query set before the loop
+                    if frav_list:                    
+                        #Let's load all the FRATs and FRAVs first
+                        for FRAV in frav_list:
+                            currentRTYPE = {}
+                            currentRVAL = {}
+                            currentRTYPE['rtype_pk'] = FRAV.record_attribute_type.pk
+                            currentRTYPE['rtype_label'] = FRAV.record_attribute_type.record_type
+                            currentRTYPE['rtype'] = "FRAT"
+                            currentRVAL[FRAV.pk] = FRAV.record_value
+                            currentRTYPE['rval'] = currentRVAL
+                            rtype_list.append(currentRTYPE)
+                            
+                    #If Statement forces evaluation of the query set before the loop
+                    if frrv_list:
+                        print >>sys.stderr, frrv_list
+                        for FRRV in frrv_list:
+                            currentRTYPE = {}
+                            rvalList = []
+                            print >>sys.stderr, FRRV.pk
+                            currentRTYPE['rtype_pk'] = FRRV.record_reference_type.pk
+                            currentRTYPE['rtype_label'] = FRRV.record_reference_type.record_type
+                            currentRTYPE['rtype'] = "FRRT"
+                            #sometimes if not initialized, there won't be a FRRT reference--it will be a "NoneType" or "Null"
+                            #--if that's the case, there will be no PK value, so we will set the ref_formtype to "None" in that case
+                            if FRRV.record_reference_type.form_type_reference != None: currentRTYPE['ref_formtype'] = FRRV.record_reference_type.form_type_reference.pk
+                            else: currentRTYPE['ref_formtype'] = "None"
+                            currentRTYPE['ext_key'] = FRRV.external_key_reference
+                            currentRTYPE['rval_pk'] = FRRV.pk
+                            for FRRV_REF in FRRV.record_reference.all():
+                                currentRVAL = {}
+                                currentRVAL['pk'] = FRRV_REF.pk
+                                currentRVAL['name'] = FRRV_REF.form_name
+                                currentRVAL['thumbnail'] = FRRV_REF.get_ref_thumbnail()
+                                currentRVAL['url'] = reverse('maqlu_admin:edit_form',kwargs={'project_pk': request.user.permissions.project.pk, 'form_type_pk':FRRV_REF.form_type.pk, 'form_pk': FRRV_REF.pk})
+                                rvalList.append(currentRVAL)
+                            currentRTYPE['rval'] = rvalList
+                            rtype_list.append(currentRTYPE)
+                    #If there are no FRRVs then just attach a list of the FRRT's instead with no rval data 
+                    else:       
+                        frrt_list = currentForm.form_type.ref_to_parent_formtype.all()
+                        print >>sys.stderr, frrt_list
+                        
+                        if frrt_list:
+                            for FRRT in frrt_list:
+                                print >>sys.stderr, FRRT.form_type_reference
+                                currentRTYPE = {}
+                                currentRTYPE['rtype_pk'] = FRRT.pk
+                                currentRTYPE['rtype_label'] = FRRT.record_type
+                                currentRTYPE['rtype'] = "FRRT"
+                                currentRTYPE['ref_formtype'] = FRRT.form_type_reference.pk
+                                currentRTYPE['ext_key'] = ""
+                                currentRTYPE['rval_pk'] = ""
+                                currentRTYPE['rval'] = ""
+                                rtype_list.append(currentRTYPE)   
+                                
+                    #convert python dict to a json string and send it back as a response
+                    jsonData = json.dumps(jsonData);
+                    return HttpResponse(jsonData, content_type="application/json")    
+                    
                 ERROR_MESSAGE += "Error: You do not have permission to accesss this project."
             ERROR_MESSAGE += "Error: You have not submitted through POST"
         else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
@@ -3643,13 +6652,59 @@ class MyAdminSite(AdminSite):
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
     
-    ##==========================================================================================================================    
+   
+    #=======================================================#
+    #   ACCESS LEVEL :  1       GET_FORMTYPE_FORM_LIST()   *Recycling            
+    #=======================================================#    
+    def get_formtype_form_list(self, request):
+        #***************#
+        ACCESS_LEVEL = 1
+        #***************#
+        #------------------------------------------------------------------------------------------------------------------------------------
+        #:::This endpoint returns a JSON list of all form names and pk values attached to a specific formtype. It's used mainly to
+        #   --to help drop-down menu widgets function, but may be used by other features as well.
+        #
+        #------------------------------------------------------------------------------------------------------------------------------------
+        
+        ERROR_MESSAGE = ""
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):
+            #$$$ SECURITY $$$ Make sure we only take POST requests
+            if request.method == 'POST':   
+                print >>sys.stderr, request.POST
+                currentFormType = FormType.objects.get(pk=request.POST['formtype_pk'])                       
+                #$$$ SECURITY $$$ Make sure form is in the same project space as the user or refuse the request for the list
+                if currentFormType.project.pk == request.user.permissions.project.pk:
+                    jsonData = {}
+                    form_list = []
+                    jsonData['form_list'] = form_list
+                    
+                    #*** RECYCLING BIN *** Make sure Forms are filtered by their deletion flags
+                    for aForm in currentFormType.form_set.all().filter(flagged_for_deletion=False):
+                        currentForm = {}
+                        currentForm['form_label'] = aForm.form_name
+                        currentForm['form_pk'] = aForm.pk
+                        form_list.append(currentForm)
+                    #convert python dict to a json string and send it back as a response
+                    jsonData = json.dumps(jsonData);
+                    return HttpResponse(jsonData, content_type="application/json")    
+                    
+                ERROR_MESSAGE += "Error: You do not have permission to accesss this project."
+            ERROR_MESSAGE += "Error: You have not submitted through POST"
+        else: ERROR_MESSAGE += "Error: You do not have permission to access modifying user information"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        return HttpResponse('{"ERROR":"'+ ERROR_MESSAGE +'"}',content_type="application/json")        
+    
+
+   ##==========================================================================================================================    
     #  ADMIN DJANGO VIEWS   ****************************************************************************************************
     ##==========================================================================================================================    
 
 
     #=====================================================================================#
-    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 3   VIEW_FORM_TYPE()
+    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 3   VIEW_FORM_TYPE() *RECYCLING
     #=====================================================================================#       
     def view_form_type(self, request, **kwargs):
         #************************#
@@ -3671,6 +6726,10 @@ class MyAdminSite(AdminSite):
             formtype = FormType.objects.get(pk=kwargs['form_type_pk'])
         except:
             raise Http404("This Page Does Not Exist!")    
+            
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)    
+        if formtype.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+        
         #Make sure the user is trying to access their project and not another project
         #If they are trying to access another project--warn them their action has been logged
         #after redirecting them to a warning page
@@ -3686,6 +6745,7 @@ class MyAdminSite(AdminSite):
             kwargs.update({'form':'False'})
             kwargs.update({'toolbar_title_code': 'FormType_' + kwargs['form_type_pk']})
             kwargs.update({'deletable': 'False'})
+            print >>sys.stderr, request
         else:
             #If anything goes wrong in the process, return an error in the json HTTP Response
             SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
@@ -3700,7 +6760,165 @@ class MyAdminSite(AdminSite):
         kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
         return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))            
  
- 
+    #=====================================================================================#
+    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 3   QUERY_FORM_TYPE() *RECYCLING
+    #=====================================================================================#       
+    def query_form_type(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 1
+        TEMPLATE_ACCESS_LEVEL = 3
+        #************************#
+        #-----------------------------------------------------------------------------------
+        #   This view displays the view form type template--or essentially the query engine
+        #   --attached to it. It allows the user to look at forms and their details in bulk
+        #   --according to their form type, and also allows those forms to be queried by
+        #   --the query engine where graphs/charts etc. are produced. All this view needs to
+        #   --do is pass a few variables to the template, and display the template. The AJAX
+        #   --and template will handle all permissions etc. from there
+        ERROR_MESSAGE = ""
+
+        #Setup our variable's we'll pass to the template if allowed
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+            formtype = FormType.objects.get(pk=kwargs['form_type_pk'])
+        except:
+            raise Http404("This Page Does Not Exist!")    
+            
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)    
+        if formtype.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+        
+        #Make sure the user is trying to access their project and not another project
+        #If they are trying to access another project--warn them their action has been logged
+        #after redirecting them to a warning page
+        if project.pk == request.user.permissions.project.pk and formtype.project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'counter':counter}) 
+            kwargs.update({'project':project}) 
+            kwargs.update({'formtype':formtype}) 
+            kwargs.update({'form':'False'})
+            kwargs.update({'toolbar_title_code': 'FormType_' + kwargs['form_type_pk']})
+            kwargs.update({'deletable': 'False'})
+            print >>sys.stderr, request
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/query_form_type.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))            
+
+     #=====================================================================================#
+    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 3   MASTER_QUERY_ENGINE() *RECYCLING
+    #=====================================================================================#       
+    def master_query_engine(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 1
+        TEMPLATE_ACCESS_LEVEL = 3
+        #************************#
+        #-----------------------------------------------------------------------------------
+        #   This view displays the view form type template--or essentially the query engine
+        #   --attached to it. It allows the user to look at forms and their details in bulk
+        #   --according to their form type, and also allows those forms to be queried by
+        #   --the query engine where graphs/charts etc. are produced. All this view needs to
+        #   --do is pass a few variables to the template, and display the template. The AJAX
+        #   --and template will handle all permissions etc. from there
+        ERROR_MESSAGE = ""
+
+        #Setup our variable's we'll pass to the template if allowed
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+        except:
+            raise Http404("This Page Does Not Exist!")    
+            
+        
+        #Make sure the user is trying to access their project and not another project
+        #If they are trying to access another project--warn them their action has been logged
+        #after redirecting them to a warning page
+        if project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'counter':counter}) 
+            kwargs.update({'project':project})
+            kwargs.update({'form':'False'})
+            kwargs.update({'toolbar_title_code': 'Project_' + kwargs['project_pk']})
+            kwargs.update({'deletable': 'False'})
+            print >>sys.stderr, request
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/master_query_engine.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))            
+
+
+    #=====================================================================================#  
+    #   ACCESS LEVEL :  4   TEMPLATE_ACCESS_LEVEL : 4    GEOJSON_IMPORTER()
+    #=====================================================================================#  
+    def geojson_importer(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 4
+        TEMPLATE_ACCESS_LEVEL = 4
+        #************************#
+        #-----------------------------------------------------------------------------------
+        #-----------------------------------------------------------------------------------
+        #   This view displays the base template for the CSV importer to create new form types
+        #   --and populate them with forms based on rows in the CSV
+        #   --Most of the logic is done in an API Endpoint, but the base template provides the necessary
+        #   --tools in Jscript to perform all of this.
+        #   The Importer works client-side to process the CSV file in JSON and when the user finishes the form,
+        #   --it will upload the processed CSV data to the server and run the actual database import
+        ERROR_MESSAGE = ""
+        
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+        except:
+            raise Http404("Project Does Not Exist!")       
+            
+        if project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'project':project})
+            kwargs.update({'form':'False'})
+            kwargs.update({'counter':counter})
+            kwargs.update({'toolbar_title_code': 'CSVImporter_none'})
+            kwargs.update({'deletable': 'False'})
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+            
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/geojson_importer.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))     
+        
     #=====================================================================================#  
     #   ACCESS LEVEL :  4   TEMPLATE_ACCESS_LEVEL : 4    FORM_TYPE_IMPORTER()
     #=====================================================================================#  
@@ -3747,7 +6965,103 @@ class MyAdminSite(AdminSite):
         #If anything goes wrong in the process, return an error in the json HTTP Response
         SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
         kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
-        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))         
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))        
+        
+    #=====================================================================================#  
+    #   ACCESS LEVEL :  4   TEMPLATE_ACCESS_LEVEL : 4    FORMTYPE_FORM_IMPORTER()
+    #=====================================================================================#  
+    def formtype_form_importer(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 4
+        TEMPLATE_ACCESS_LEVEL = 4
+        #************************#
+        #-----------------------------------------------------------------------------------
+        #-----------------------------------------------------------------------------------
+        #   This view displays the base template for the CSV importer to create new form types
+        #   --and populate them with forms based on rows in the CSV
+        #   --Most of the logic is done in an API Endpoint, but the base template provides the necessary
+        #   --tools in Jscript to perform all of this.
+        #   The Importer works client-side to process the CSV file in JSON and when the user finishes the form,
+        #   --it will upload the processed CSV data to the server and run the actual database import
+        ERROR_MESSAGE = ""
+        
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+            formtype = FormType.objects.get(pk=kwargs['form_type_pk'])
+        except:
+            raise Http404("Project Does Not Exist!")       
+            
+        if project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'project':project})
+            kwargs.update({'form':'False'})
+            kwargs.update({'formtype':formtype}) 
+            kwargs.update({'toolbar_title_code': 'CSVImporter_none'})
+            kwargs.update({'deletable': 'False'})
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+            
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/formtype_form_importer.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))        
+                  
+    #=====================================================================================#  
+    #   ACCESS LEVEL :  4   TEMPLATE_ACCESS_LEVEL : 4    RTYPE_TYPE_IMPORTER()
+    #=====================================================================================#  
+    def rtype_importer(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 4
+        TEMPLATE_ACCESS_LEVEL = 4
+        #************************#
+        
+        #-----------------------------------------------------------------------------------
+        #-----------------------------------------------------------------------------------
+        #
+        #
+        
+        ERROR_MESSAGE = ""
+        
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+            formtype = FormType.objects.get(pk=kwargs['form_type_pk'])
+        except:
+            raise Http404("Project Does Not Exist!")       
+            
+        if project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'project':project})
+            kwargs.update({'form':'False'})
+            kwargs.update({'formtype':formtype}) 
+            kwargs.update({'toolbar_title_code': 'FormType_' + kwargs['form_type_pk']})
+            kwargs.update({'deletable': 'False'})
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+            
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/new_rtype_importer.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))                
 
         
     #=====================================================================================#  
@@ -3780,7 +7094,6 @@ class MyAdminSite(AdminSite):
             kwargs.update({'project':project}) 
             kwargs.update({'toolbar_title_code': 'Project_' + kwargs['project_pk']})
             kwargs.update({'form':'False'})
-
             kwargs.update({'deletable': 'False'})           
         else: 
             #If anything goes wrong in the process, return an error in the json HTTP Response
@@ -3797,7 +7110,7 @@ class MyAdminSite(AdminSite):
         return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))     
         
     #=====================================================================================#
-    #   ACCESS LEVEL :  3    TEMPLATE_ACCESS_LEVEL : 3   EDIT_FORM_TYPE()
+    #   ACCESS LEVEL :  3    TEMPLATE_ACCESS_LEVEL : 3   EDIT_FORM_TYPE() *RECYCLING
     #=====================================================================================#            
     def edit_form_type(self, request, **kwargs):
         #************************#
@@ -3813,7 +7126,11 @@ class MyAdminSite(AdminSite):
             project = FormProject.objects.get(pk=kwargs['project_pk'])
             formtype = FormType.objects.get(pk=kwargs['form_type_pk'])
         except:
-            raise Http404("Project Does Not Exist!")       
+            raise Http404("Project Does Not Exist!")     
+
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)    
+        if formtype.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+            
         #Make sure the user is trying to access their project and not another project
         #If they are trying to access another project--warn them their action has been logged
         #after redirecting them to a warning page
@@ -3889,7 +7206,7 @@ class MyAdminSite(AdminSite):
         return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request))) 
 
     #=====================================================================================#
-    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 2   EDIT_FORM()
+    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 2   EDIT_FORM() *RECYCLING
     #=====================================================================================#            
     def edit_form(self, request, **kwargs):
         #************************#
@@ -3908,13 +7225,35 @@ class MyAdminSite(AdminSite):
         except:
             raise Http404("Form does not exist")
                 #Do something with request here
-                
+          
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)
+        if form.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+        
         #Make sure the user is trying to access their project and not another project
         #If they are trying to access another project--warn them their action has been logged
         #after redirecting them to a warning page
         if project.pk == request.user.permissions.project.pk and form.project.pk == request.user.permissions.project.pk and form.form_type.pk == form_type.pk:          
             counter = Counter()
             counter.reset()
+            
+            #Temp function to make displaying the page much faster--remove the database query hits from the actual .html file
+            #Need a list of this form's rtypes and a list of this forms rtype values
+            print >>sys.stderr, "TIMER FOR FORM EDIT A"
+           
+            #*** RECYCLING BIN ***  We need to make sure all the RTYPES and RVALS(by their RTYPE) are filtered out by their deletion flags
+            frat_list = form_type.formrecordattributetype_set.all().filter(flagged_for_deletion=False)
+            frav_list = form.formrecordattributevalue_set.all().filter(record_attribute_type__flagged_for_deletion=False)
+            
+            frrt_list = form_type.ref_to_parent_formtype.all().filter(flagged_for_deletion=False)
+            frrv_list = form.ref_to_parent_form.all().filter(record_reference_type__flagged_for_deletion=False)
+            
+            
+            kwargs.update({'api_urls':get_api_endpoints()})
+            kwargs.update({'frat_list':frat_list})
+            kwargs.update({'frav_list':frav_list})
+            kwargs.update({'frrt_list':frrt_list})
+            kwargs.update({'frrv_list':frrv_list})
+            print >>sys.stderr, "TIMER FOR FORM EDIT A"
             kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
             kwargs.update({'user_access':request.user.permissions.access_level})
             kwargs.update({'user_project':request.user.permissions.project})  
@@ -3939,7 +7278,7 @@ class MyAdminSite(AdminSite):
 
         
     #=====================================================================================#
-    #   ACCESS LEVEL :  2    TEMPLATE_ACCESS_LEVEL : 2   NEW_FORM()
+    #   ACCESS LEVEL :  2    TEMPLATE_ACCESS_LEVEL : 2   NEW_FORM() *RECYCLING
     #=====================================================================================#        
     def new_form(self, request, **kwargs):
         #************************#
@@ -3958,10 +7297,15 @@ class MyAdminSite(AdminSite):
         except FormType.DoesNotExist:
             raise Http404("Form Type does not exist")
 
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)
+        #   --we still need to check the formtype to prevent URL hacking
+        if form_type.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+            
         #Make sure the user is trying to access their project and not another project
         #If they are trying to access another project--warn them their action has been logged
         #after redirecting them to a warning page
-        if project.pk == request.user.permissions.project.pk and form_type.project.pk == request.user.permissions.project.pk:         
+        if project.pk == request.user.permissions.project.pk and form_type.project.pk == request.user.permissions.project.pk:   
+            kwargs.update({'api_urls':get_api_endpoints()})
             kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
             kwargs.update({'user_access':request.user.permissions.access_level})
             kwargs.update({'user_project':request.user.permissions.project})                         
@@ -3984,7 +7328,7 @@ class MyAdminSite(AdminSite):
         return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request))) 
 
     #=====================================================================================#
-    #   ACCESS LEVEL :  2    TEMPLATE_ACCESS_LEVEL : 2  EDIT_FORM_TYPE_TEMPLATE()   !!!TODO !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    #   ACCESS LEVEL :  2    TEMPLATE_ACCESS_LEVEL : 2  EDIT_FORM_TYPE_TEMPLATE()  *RECYCLING
     #=====================================================================================#        
     def edit_form_type_template(self, request, **kwargs):
         #************************#
@@ -3992,7 +7336,7 @@ class MyAdminSite(AdminSite):
         TEMPLATE_ACCESS_LEVEL = 2
         #************************#
         #-----------------------------------------------------------------------------------------------
-        #   This is a test view for templating views -- TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        #   This is a test view for templating views -- TODO!!!!!!!!!!!!!!!!!!!!!!!!!!!
         
         ERROR_MESSAGE = ""
         
@@ -4002,10 +7346,14 @@ class MyAdminSite(AdminSite):
         except FormType.DoesNotExist:
             raise Http404("Form Type does not exist")
 
+        #*** RECYCLING BIN *** Return a 404 Error if the requsted model instance is flagged for deletion (in the recycling bin)
+        if form_type.flagged_for_deletion == True: raise Http404("This Page Does Not Exist!")
+        
         #Make sure the user is trying to access their project and not another project
         #If they are trying to access another project--warn them their action has been logged
         #after redirecting them to a warning page
-        if project.pk == request.user.permissions.project.pk and form_type.project.pk == request.user.permissions.project.pk:         
+        if project.pk == request.user.permissions.project.pk and form_type.project.pk == request.user.permissions.project.pk:       
+            kwargs.update({'api_urls':get_api_endpoints()})
             kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
             kwargs.update({'user_access':request.user.permissions.access_level})
             kwargs.update({'user_project':request.user.permissions.project})                         
@@ -4027,7 +7375,104 @@ class MyAdminSite(AdminSite):
         kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
         return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request))) 
 
+    #=====================================================================================#
+    #   ACCESS LEVEL :  5    TEMPLATE_ACCESS_LEVEL : 5  RECYCLING_BIN()  
+    #=====================================================================================#        
+    def recycling_bin(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 5
+        TEMPLATE_ACCESS_LEVEL = 5
+        #************************#
+        #-----------------------------------------------------------------------------------------------
+        #   This redirects the Admin to the recycling bin page
+        
+        ERROR_MESSAGE = ""
+        
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+        except FormType.DoesNotExist:
+            raise Http404("Project does not exist")
 
+        #Make sure the user is trying to access their project and not another project
+        #If they are trying to access another project--warn them their action has been logged
+        #after redirecting them to a warning page
+        if project.pk == request.user.permissions.project.pk:       
+            kwargs.update({'api_urls':get_api_endpoints()})
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})     
+            kwargs.update({'project':project}) 
+            kwargs.update({'toolbar_title_code': 'Project_' + kwargs['project_pk']})
+            kwargs.update({'form':'False'})
+            kwargs.update({'deletable': 'False'})   
+        else:
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/recycling_bin.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"        
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request))) 
+
+        
+    #=====================================================================================#
+    #   ACCESS LEVEL :  1    TEMPLATE_ACCESS_LEVEL : 3   GEOSPATIAL_ENGINE() 
+    #=====================================================================================#       
+    def geospatial_engine(self, request, **kwargs):
+        #************************#
+        ACCESS_LEVEL = 1
+        TEMPLATE_ACCESS_LEVEL = 3
+        #************************#
+        #-----------------------------------------------------------------------------------
+        #   This view displays the view form type template--or essentially the query engine
+        #   --attached to it. It allows the user to look at forms and their details in bulk
+        #   --according to their form type, and also allows those forms to be queried by
+        #   --the query engine where graphs/charts etc. are produced. All this view needs to
+        #   --do is pass a few variables to the template, and display the template. The AJAX
+        #   --and template will handle all permissions etc. from there
+        ERROR_MESSAGE = ""
+
+        #Setup our variable's we'll pass to the template if allowed
+        try:
+            project = FormProject.objects.get(pk=kwargs['project_pk'])
+        except:
+            raise Http404("This Page Does Not Exist!")    
+            
+        
+        #Make sure the user is trying to access their project and not another project
+        #If they are trying to access another project--warn them their action has been logged
+        #after redirecting them to a warning page
+        if project.pk == request.user.permissions.project.pk:
+            counter = Counter()
+            counter.reset()
+            kwargs.update({'api_urls':get_api_endpoints()})
+            kwargs.update({'access_level':TEMPLATE_ACCESS_LEVEL})
+            kwargs.update({'user_access':request.user.permissions.access_level})
+            kwargs.update({'user_project':request.user.permissions.project})
+            kwargs.update({'counter':counter}) 
+            kwargs.update({'project':project}) 
+            kwargs.update({'form':'False'})
+            kwargs.update({'toolbar_title_code': 'Project_' + kwargs['project_pk']})
+            kwargs.update({'deletable': 'False'})
+            print >>sys.stderr, request
+        else:
+            #If anything goes wrong in the process, return an error in the json HTTP Response
+            SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), 'Trying to access another project.', request.META)
+            return HttpResponse(render_to_response('maqluengine/admin_warning.html', kwargs, RequestContext(request)))
+        
+        #Check our user's session and access level
+        if SECURITY_check_user_permissions(ACCESS_LEVEL, request.user.permissions.access_level):        
+            return HttpResponse(render_to_response('maqluengine/geospatial_engine.html', kwargs, RequestContext(request)))    
+        else: ERROR_MESSAGE += "Error: You do not have permission to view this page"
+        #If anything goes wrong in the process, return an error in the json HTTP Response
+        SECURITY_log_security_issues(request.user, 'admin.py - ' + str(sys._getframe().f_code.co_name), ERROR_MESSAGE, request.META)
+        kwargs.update({'ERROR_MESSAGE': ERROR_MESSAGE})
+        return HttpResponse(render_to_response('maqluengine/admin_error.html', kwargs, RequestContext(request)))            
+         
 
     ##==========================================================================================================================    
     #  OVERRIDDEN ADMIN DJANGO VIEWS   *****************************************************************************************
@@ -4071,6 +7516,7 @@ class MyAdminSite(AdminSite):
             #All Admin API Endpoints 
             url(r'^get_user_list/$', admin.site.admin_view(self.get_user_list), name='get_user_list'),
             url(r'^run_query_engine/$', admin.site.admin_view(self.run_query_engine), name='run_query_engine'),
+            url(r'^run_master_query_engine/$', admin.site.admin_view(self.run_master_query_engine), name='run_master_query_engine'),
             url(r'^save_project_changes/$', admin.site.admin_view(self.save_project_changes), name='save_project_changes'),
             url(r'^save_form_type_changes/$', admin.site.admin_view(self.save_form_type_changes), name='save_form_type_changes'),
             url(r'^save_form_changes/$', admin.site.admin_view(self.save_form_changes), name='save_form_changes'),
@@ -4078,6 +7524,9 @@ class MyAdminSite(AdminSite):
             url(r'^create_new_form_type/$', admin.site.admin_view(self.create_new_form_type), name='create_new_form_type'),
             url(r'^create_new_form_type_template/$', admin.site.admin_view(self.create_new_form_type_template), name='create_new_form_type_template'),
             url(r'^run_form_type_importer/$', admin.site.admin_view(self.run_form_type_importer), name='run_form_type_importer'),
+            url(r'^run_form_type_form_importer/$', admin.site.admin_view(self.run_form_type_form_importer), name='run_form_type_form_importer'),
+            url(r'^run_new_rtype_importer/$', admin.site.admin_view(self.run_new_rtype_importer), name='run_new_rtype_importer'),
+            url(r'^run_geojson_importer/$', admin.site.admin_view(self.run_geojson_importer), name='run_geojson_importer'),
             url(r'^get_previous_next_forms/$', admin.site.admin_view(self.get_previous_next_forms), name='get_previous_next_forms'),
             url(r'^username_taken/$', admin.site.admin_view(self.username_taken), name='username_taken'),
             url(r'^debug_tool/$', admin.site.admin_view(self.debug_tool), name='debug_tool'),
@@ -4086,20 +7535,47 @@ class MyAdminSite(AdminSite):
             url(r'^delete_form/$', admin.site.admin_view(self.delete_form), name='delete_form'),
             url(r'^delete_frat/$', admin.site.admin_view(self.delete_frat), name='delete_frat'),
             url(r'^delete_frrt/$', admin.site.admin_view(self.delete_frrt), name='delete_frrt'),
+            url(r'^delete_form_type_group/$', admin.site.admin_view(self.delete_form_type_group), name='delete_form_type_group'),
+            url(r'^restore_form_type/$', admin.site.admin_view(self.restore_form_type), name='restore_form_type'),
+            url(r'^restore_form/$', admin.site.admin_view(self.restore_form), name='restore_form'),
+            url(r'^restore_frat/$', admin.site.admin_view(self.restore_frat), name='restore_frat'),
+            url(r'^restore_frrt/$', admin.site.admin_view(self.restore_frrt), name='restore_frrt'),
+            url(r'^recycle_form_type/$', admin.site.admin_view(self.recycle_form_type), name='recycle_form_type'),
+            url(r'^recycle_form/$', admin.site.admin_view(self.recycle_form), name='recycle_form'),
+            url(r'^recycle_frat/$', admin.site.admin_view(self.recycle_frat), name='recycle_frat'),
+            url(r'^recycle_frrt/$', admin.site.admin_view(self.recycle_frrt), name='recycle_frrt'),
+            url(r'^load_recycling_bin/$', admin.site.admin_view(self.load_recycling_bin), name='load_recycling_bin'),
             #url(r'^csvexport/$', admin.site.admin_view(self.test_csv_export), name='test_csv_export'),
             url(r'^modify_project_user/$', admin.site.admin_view(self.modify_project_user), name='modify_project_user'),
             url(r'^get_form_search_list/$', admin.site.admin_view(self.get_form_search_list), name='get_form_search_list'),
             url(r'^bulk_edit_formtype/$', admin.site.admin_view(self.bulk_edit_formtype), name='bulk_edit_formtype'),
             url(r'^get_rtype_list/$', admin.site.admin_view(self.get_rtype_list), name='get_rtype_list'),
+            url(r'^get_formtype_form_list/$', admin.site.admin_view(self.get_formtype_form_list), name='get_formtype_form_list'),
+            url(r'^get_form_rtypes/$', admin.site.admin_view(self.get_form_rtypes), name='get_form_rtypes'),
+            url(r'^get_formtype_geospatial_layers/$', admin.site.admin_view(self.get_formtype_geospatial_layers), name='get_formtype_geospatial_layers'),
             url(r'^navigate_query_pagination/$', admin.site.admin_view(self.navigate_query_pagination), name='navigate_query_pagination'),
+            url(r'^navigate_master_query_pagination/$', admin.site.admin_view(self.navigate_master_query_pagination), name='navigate_master_query_pagination'),
             url(r'^check_progress/$', admin.site.admin_view(self.check_progress), name='check_progress'),
             url(r'^check_progress_query/$', admin.site.admin_view(self.check_progress_query), name='check_progress_query'),
+            url(r'^export_formtype/$', admin.site.admin_view(self.export_formtype), name='export_formtype'),
+            url(r'^export_project/$', admin.site.admin_view(self.export_project), name='export_project'),
+            url(r'^get_projects/$', admin.site.admin_view(self.get_projects), name='get_projects'),
+            url(r'^get_formtypes/$', admin.site.admin_view(self.get_formtypes), name='get_formtypes'),
+            url(r'^get_rtypes/$', admin.site.admin_view(self.get_rtypes), name='get_rtypes'),
+            url(r'^save_user_query/$', admin.site.admin_view(self.save_user_query), name='save_user_query'),
             
             #All Admin Template Views
             url(r'^project/(?P<project_pk>[0-9]+)/$', self.admin_view(self.project_home), name='project_home'),
+            url(r'^project/(?P<project_pk>[0-9]+)/recycling_bin/$', self.admin_view(self.recycling_bin), name='recycling_bin'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype_importer/$', admin.site.admin_view(self.form_type_importer), name='formtype_importer'),
+            url(r'^project/(?P<project_pk>[0-9]+)/geojson_importer/$', admin.site.admin_view(self.geojson_importer), name='geojson_importer'),
+            url(r'^project/(?P<project_pk>[0-9]+)/geospatial_engine/$', admin.site.admin_view(self.geospatial_engine), name='geospatial_engine'),
+            url(r'^project/(?P<project_pk>[0-9]+)/formtype/(?P<form_type_pk>[0-9]+)/rtype_importer/$', admin.site.admin_view(self.rtype_importer), name='rtype_importer'),
+            url(r'^project/(?P<project_pk>[0-9]+)/formtype/(?P<form_type_pk>[0-9]+)/form_importer/$', admin.site.admin_view(self.formtype_form_importer), name='formtype_form_importer'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype_editor/(?P<form_type_pk>[0-9]+)/$', admin.site.admin_view(self.edit_form_type), name='edit_form_type'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype/(?P<form_type_pk>[0-9]+)/$', admin.site.admin_view(self.view_form_type), name='view_form_type'),
+            url(r'^project/(?P<project_pk>[0-9]+)/formtype_query_engine/(?P<form_type_pk>[0-9]+)/$', admin.site.admin_view(self.query_form_type), name='query_form_type'),
+            url(r'^project/(?P<project_pk>[0-9]+)/master_query_engine/$', admin.site.admin_view(self.master_query_engine), name='master_query_engine'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype_generator/$', admin.site.admin_view(self.new_form_type), name='new_form_type'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype/(?P<form_type_pk>[0-9]+)/formtype_template_generator/$', admin.site.admin_view(self.edit_form_type_template), name='edit_form_type_template'),
             url(r'^project/(?P<project_pk>[0-9]+)/formtype/(?P<form_type_pk>[0-9]+)/form_generator/$', admin.site.admin_view(self.new_form), name='new_form'),
@@ -4214,4 +7690,5 @@ admin.site = MyAdminSite() #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 #################################################################################################################################################################################################################################################################################################################################
 #################################################################################################################################################################################################################################################################################################################################
 #################################################################################################################################################################################################################################################################################################################################
+
 

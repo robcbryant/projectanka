@@ -18,6 +18,6 @@ tmp/*
 db/
 test_db/
 media/*
-*/settings/
-/static/*
+*/settings/local_settings.py
+
 

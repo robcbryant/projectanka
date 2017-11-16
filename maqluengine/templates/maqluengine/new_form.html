@@ -23,37 +23,6 @@
         
         <div id="center-pane" class="col-md-10">
         
-                <form id="form-nav-search-form" method="post" autocomplete="off">
-                {% if user_access >= access_level %}{% csrf_token %}{% endif %}
-                <div id="nav-container">
-                    <div class="spacer"></div>
-                    <div id="form-navigation">
-                    
-                        <div class="span-container"><a id="previous-form-link"><span class="glyphicon glyphicon-backward"></span></a></div>
-                        <div class="search-field">
-                            <input type='text' id="form-nav-search" oninput="queryServerForMatchingForms(this, {{project.pk}}, {{formtype.pk}});"></input>
-                            <div id="search-box-list" style="display:none;"></div>
-                        </div>
-                        <div class="span-container"><a id="next-form-link"><span class="glyphicon glyphicon-forward"></span></a></div>
-                    </div>
-                    <div class="spacer"> 
-                    
-                    {% if user_access >= access_level %}
-                    <div class="btn-group btn-group-sm save-delete-buttons" role="group">
-                        <label for="submit-form" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn btn-success" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
-                        
-                        <button id="toolbar-delete" class="btn btn-danger" disabled><span class="glyphicon glyphicon-trash"></span></button>
-
-                    </div>  
-                   {% endif %} 
-                       
-                    </div>
-                </div>
-                <input type="submit" autocomplete="off" hidden/>    
-             </form>
-        
-        
-        
 
             <form id="new-form" method="post">
                 {% if user_access >= access_level %}
@@ -82,7 +51,16 @@
                             <!-- FormType Name Entry for Editing-->
                             <div id="form-properties" class="col-md-6">
                                 <div id="form-info" class="panel">
-                                    <div class="panel-heading">{{ formtype.form_type_name }} Properties</div>
+                                    <div class="panel-heading">
+                                        <div>{{ formtype.form_type_name }} Properties</div>
+                                        {% if user_access >= access_level %}
+                                        <div class="save-delete-buttons">
+                                            <label for="submit-form" data-toggle="tooltip" data-placement="bottom" title="Save New Form or Form Template" class="btn save-button" role="button"><span class="glyphicon glyphicon-floppy-disk"></span></label>
+                                           
+                                        </div>  
+                                       {% endif %} 
+                                        
+                                    </div>
                                     <div class="panel-body">
                                         <div class="input-group">
                                             {% if formtype.type == 0 %}
@@ -101,6 +79,7 @@
                                                 <select  class="selectpicker" data-size="5" data-width="100%" data-live-search="true" name="hierarchical_reference">
                                                     <option value="NONE">--None--</option>
                                                 {% for aform in formtype.form_set.all%}
+                                     
                                                     <option data-icon="glyphicon-file" value="{{aform.pk}}">{%if aform.hierarchy_parent != None %}{{aform.hierarchy_parent}}{%endif%} -- {{aform}}</option>
                                                 {% endfor %} 
                                                 </select>
@@ -120,33 +99,7 @@
                     
                     <div id="form-all-fields-grid" class="">  
                         <div class="layout-container">
-                            {% for formrecordattributetype in formtype.formrecordattributetype_set.all %}
-                                <div class="attribute-float frat" id="{{formrecordattributetype.pk}}">
-                                    <ul class="list-group" title="{{formrecordattributetype}}">
-                                        <li class="list-group-item input-label"><strong>{{formrecordattributetype.record_type|trim_title}}</strong></li>
-                                        <li class="list-group-item input-field">
-                                            <textarea name="{{formrecordattributetype|post_model_type}}{{formrecordattributetype.pk}}"></textarea>
-                                        </li>
-                                    </ul>
-                                </div>
-                            {% endfor %}
-                        {% for FRRT in formtype.ref_to_parent_formtype.all %}  
 
-                                    <div class="widget-FRRT frrt"  id="{{FRRT.pk}}" title="{{FRRT.pk}}" msg="NEW">
-                                        <div class="frrv-title">
-                                            <div>{{FRRT.record_type|trim_title}}</div>
-                                        </div>
-                                        <div class="frrv-list">
-
-                                        </div>
-                                        <div class="frrv-search">
-                                            <div><span class="glyphicon glyphicon-barcode"></span><input type="text" name="frrvNEW__{{FRRT.pk}}__ext"></input></div>
-                                            <div><span class="glyphicon glyphicon-search"></span><input type="text" oninput="lookForReferenceForms(this, {{project.pk}}, {{FRRT.form_type_reference.pk}},{{FRRT.pk}})"></input><div class="search-box-list" style="display:none;"></div></div>
-                                        </div>
-                                    </div>
-                                    
-
-                        {% endfor %}
                         </div>
                     </div>
                     
@@ -159,28 +112,116 @@
             </form>
         </div>
     </div>
+    
+    <!---------------------------------------------------------------------------------------------------------------------------------------------------------->    
+    <!-- ALL WIDGET TEMPLATES CONTAINER (for cloning) ---------------------------------------------------------------------------------------------------------->
+    <!---------------------------------------------------------------------------------------------------------------------------------------------------------->
+    <div id="widget-templates" style="display:none">
+                <!-- LABEL WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-label" type="label"><div class="widget-label-value LABEL">Label</div></div>
+                
+                <!-- DROPDOWN SELECT WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-dropdown-view widget-FRRT widget frrt" id="" type="dropdown-view" msg="NEW">
+                    <div class="dropdown-title LABEL">Label Here</div>
+                    <div class="ext-key" hidden><input hidden></input></div>
+                    <select name=""><option value="" selected="">None</option></select>
+                </div>                
+                
+                <!-- THUMB LIST WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-thumb-view widget-FRRT widget frrt" id="" type="frrt" msg="NEW">
+                    
+                    <div class="frrv-title">
+                        <div class="LABEL"></div>
+                    </div>
+                    <div class="frrv-list">          
+                        
+                        
+                    </div>
+                    <div class="frrv-search">
+                        <div class="ext-key"><span class="glyphicon glyphicon-barcode"></span><input type="text"></input></div>
+                        <div class="search-box"><span class="glyphicon glyphicon-search"></span><input type="text"></input><div class="search-box-list" hidden></div></div>
+                    </div>
 
+                </div>
+                
+                <!-- IMAGE VIEW WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-image-view widget-FRRT frrt" msg="NEW">
+                    <div class="frrv-title">
+                        <div class="LABEL"></div>
+                    </div>
+                    <div class="widget-image-view-nav-arrows">
+                        <button class="nav-left" type="button"><span class="glyphicon glyphicon-chevron-left"></span></button>
+                        <button class="nav-right" type="button"><span class="glyphicon glyphicon-chevron-right"></span></button>
+                    </div>
+                    <div class="frrv-list">
+                       
+                    </div>
+                    <div class="frrv-search">
+                        <div class="ext-key"><span class="glyphicon glyphicon-barcode"></span><input type="text"></input></div>
+                        <div class="search-box"><span class="glyphicon glyphicon-search"></span><input type="text"></input><div class="search-box-list" hidden></div></div>
+                        
+                    </div>                  
+                </div>        
+                
+                <!-- FRAT WIDGET ------------------------------------------------------------------------------------------------------------------------>
+                <div class="widget-frat attribute-float widget frat" id="" type="frat" msg="NEW">
+                    <ul class="list-group" title="">
+                        <li class="list-group-item input-label"><strong class="LABEL"></strong></li>
+                        <li class="list-group-item input-field">
+                            <textarea style="resize:none;"></textarea>
+                        </li>
+                    </ul>
+                </div>
+                
+                <!-- Other Widget related templates, e.g. a list item template -->
+                
+                    <!-- Thumb List Item Template -->
+                    <div class="frrv-container thumb-view-item"><input name="" value="" hidden></input><img class="enki-img-popup" src=""><div class="frrv-label" style=""><a href="#">Example Item 1</a></div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+                    <!-- Image View Item Template -->
+                    <div class="frrv-container image-view-item"><input name="" value="" hidden></input><div class="frrv-label"><a href="">Label</a></div><img class="enki-img-popup" src=""></img><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>
+    </div>
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->    
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->
+    <!--^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^-->   
+    
 {% endblock %}
 
     {% block footer %}
      <script src="{% static 'js/enki_geoeditor_single_entity.js'  %}"></script> 
-     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>       
+     <script src="{% static 'js/enki-form-navigation-search.js'  %}"></script>      
+     <script src="{% static 'js/enki-thumbnail-popup.js'  %}"></script>
+     <script src="{% static 'js/enki_template_engine.js'  %}"></script>      
     {% if user_access >= access_level %}
     <script>
+        function getAPIEndpoints(){
+            return JSON.parse('{{api_urls|safe}}');
+        }
+        //GLOBALS//
+        var RTYPE_LIST;
+        var CURRENT_TEMPLATE = '{{formtype.template_json|escapejs}}';
+        var CURRENT_FORM_PK = 'None';
+        var CURRENT_FORMTYPE_PK = '{{formtype.pk}}'; 
+        var CURRENT_PROJECT_PK = '{{project.pk}}';
+        var INITIALIZATION_CODE = 1;
+        var API_URLS = getAPIEndpoints();
+
+        
         $('#new-form').submit(function(e){
              e.preventDefault();
             var formData = $("#new-form").serializeArray();
-            formData.push({name: 'project_id', value: {{project.pk}} });
-            formData.push({name: 'formtype_id', value: {{formtype.pk}} });
+            formData.push({name: 'project_id', value: CURRENT_PROJECT_PK });
+            formData.push({name: 'formtype_id', value: CURRENT_FORMTYPE_PK });
             console.log(formData);
             $.ajax({ 
-                 url   : 'http://67.205.135.223/admin/create_new_form/',
+                 url   : API_URLS['create_form'],
                  type  : "POST",
                  data  : formData, // data to be submitted
                  success : function(returnedQuery)
                  {
                     console.log(returnedQuery);
-                    
+                    location.reload();
+                    try{alert(returnedQuery.MESSAGE);}
+                    catch(e){alert(returnedQuery.ERROR);}
                  },
                 // handle a non-successful response
                 fail : function(xhr,errmsg,err) {
@@ -189,196 +230,6 @@
             });        
         
         });
-
-
-        //Function to remove the current reference from the form's FRRT widget-FRRT
-        function removeReferenceFromFRRV(currentRef){
-            $(currentRef).parent().remove();
-            //$(currentRef).parent().find('input').attr('name', $(currentRef).parent().find('input').attr('name') += 'DELETE');
-        }
-        
-        
-        //Function that searches for the given list of forms based upon its formtype
-        
-        function lookForReferenceForms(searchbox, projectID, formtypeID, parentFormTypeID){
-            //First get all the associated data we'll need to send to the server
-            var searchString = $(searchbox).val();
-            var jsonData = {"projectID" : projectID, "formtypeID" : formtypeID, "query" : searchString};
-            console.log (jsonData);
-            //Send and AJAX Request
-            $.ajax({ 
-                     url   : "http://67.205.135.223/admin/get_form_search_list/",
-                     type  : "POST",
-                     data  : jsonData, // data to be submitted
-                     success : function(returnedQuery)
-                     {
-                        //$("#search-box-list").show();
-                        console.log(returnedQuery.form_list);
-                        //Create a dropdown of no more than 5 items
-                        $newSelect = $(searchbox).parent().find('.search-box-list');
-                        $newSelect.empty();
-                        $newSelect.hide();
-                        //Only do something if "form_list" is in the json data
-                        if(returnedQuery['form_list'] != null){
-                            for (i=0; i< returnedQuery.form_list.length; i++){
-                                var currentForm = returnedQuery.form_list[i];
-                                if (currentForm.label.length > 24){ 
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a style="font-size:10px;" href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
-                                } else {
-                                    if (i == 0) $newListItem = $('<div class="search-box-item first-result"><a href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');
-                                    else        $newListItem = $('<div class="search-box-item"><a href="#" onclick="addNewFRRVrefToFRRT(this, '+currentForm.label+', '+currentForm.formPK+', '+parentFormTypeID+')">'+ currentForm.label +'</a></div>');                           
-                                }
-                                $newSelect.append($newListItem);
-                            }
-                            //For another robust solution--let's modify the text size to be smaller if it's longer than 30 characterSet
-                            $newSelect.children().each( function() {
-                               if ($(this).children().first().text().length > 30) $(this).children().first().addClass('form-nav-search-sml-txt'); 
-                            });
-                            $newSelect.show();
-                        }2
-                     },
-
-                    // handle a non-successful response
-                    fail : function(xhr,errmsg,err) {
-                        console.log(xhr.status + ": " + xhr.responseText); // provide a bit more info about the error to the console
-                    }
-                });    
-            
-        }
-        //This makes the search box disappear when clicking off the box
-        $(document).mouseup(function(e) 
-{
-            var container = $(".search-box-list");
-
-            // if the target of the click isn't the container nor a descendant of the container
-            if (!container.is(e.target) && container.has(e.target).length === 0) 
-            {
-                container.hide();
-            }
-    
-    
-        });
-        
-        //Function adds a ref to the FRRT list box
-        function addNewFRRVrefToFRRT(currentElement, label, form_id, frrt_id){
-            console.log(frrt_id);
-            $currentWidget = $('.widget-FRRT[title="'+frrt_id+'"]')
-            console.log($currentWidget[0]);
-            if ($currentWidget.attr('msg') == "NEW"){
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrvNEW__'+$currentWidget.attr('title')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
-            } else  {
-                $currentWidget.find('.frrv-list').append('<div class="frrv-container"><input name="frrv__'+$currentWidget.attr('msg')+'" value="'+form_id+'" hidden></input><span class="glyphicon glyphicon-file frrv-icon"></span><div class="frrv-label">'+label+'</div><button class="btn btn-danger" type="button" onclick="removeReferenceFromFRRV(this)"><span class="glyphicon glyphicon-remove"></span></button></div>');
-            } 
-
-            $(".search-box-list").hide();          
-
-        }
-
-
-
-    function setNeededHeightOfForm(){
-        var largestY = 0;
-        $('.layout-container').children().each( function(){
-            var thisY = $(this).outerHeight() + $(this).position().top;
-            console.log(thisY);
-            if (largestY < thisY) largestY = thisY;
-        });
-        
-        console.log("settomg height: " + largestY);
-        $('.layout-container').css('height', largestY+"px");
-    }
-    
-    function loadTemplateJson(reset){
-        //This function loads the json template string provided by the formtype
-        //  --This string can contain several templates, but will always have a 'default' template that is initially loaded.
-        //  --This allows the admin to create different templates for different purposes--e.g. one template might be better for
-        //  ----data-entry while another might make more sense for just viewing the individual forms. All template will be provided
-        //  ----to each form django view, but will default to the default template unless the user has a stored preference
-        //
-        //The json has the following format:
-        //  -- {[
-        //          {"default":[
-        //                    { "id":"27",       -- The PK of the rtype which will match the widget element's ID tag
-        //                      "width":"20%",   -- The width in percentage of the widget
-        //                      "height":"20px", -- The height in pixels of the widget
-        //                      "top":"20px",    -- The top value in pixels of the widget
-        //                      "left":"20%"     -- The left value in percentage of the widget
-        //                    },
-        //                     ]
-        //          },
-        //          {"new_template":[ {....      --This is any other templates that may have been created
-        //                            ....
-        //                     } ]
-        //          },
-        //     ]}
-       
-        var currentTemplate = '{{formtype.template_json|safe}}';
-        console.log(currentTemplate);
-        //If not a new template
-       if(currentTemplate != "" && !reset && currentTemplate != "None"){
-            var template = JSON.parse(currentTemplate);
-            console.log('sanity test');
-            var widgets = template['default'];
-            
-            //loop through each 
-            for (var i = 0; i < widgets.length; i++){
-                var widget = widgets[i];
-                $currentWidget = $('#'+widget.id);
-                console.log($currentWidget);
-                $currentWidget.css('position', 'absolute');
-                if ($currentWidget.hasClass('frat')){
-                    console.log("What's happening?!?!?!");
-                    $currentWidget.css('left', widget.left);
-                    $currentWidget.css('top', widget.top);
-                    $currentWidget.css('min-width', '15%');
-                    $currentWidget.css('width', widget.width);
-                    $currentWidget.css('height', widget.height);
-                    $currentWidget.find('textarea').css('width', '100%');
-                    console.log($currentWidget.outerHeight()-25);
-                    $currentWidget.find('textarea').css('height',  $currentWidget.outerHeight()-25);
-
-                } else {
-                    $currentWidget.css('left', widget.left);
-                    $currentWidget.css('top', widget.top);
-                    $currentWidget.css('width', widget.width);
-                    $currentWidget.css('height', widget.height);
-
-                }
-            }
-            
-        } else {
-            var left = 0;
-            var top = 0;
-            console.log('sanity test2');
-            $('.widget').each( function(){
-                console.log($(this));
-                $(this).css('position', 'absolute');
-                if ($(this).hasClass('frat')){
-                    $(this).css('left', left+'%');
-                    $(this).css('top', top+'px');
-                    $(this).css('min-width', '15%');
-                    $(this).css('width', '20%');
-                    $(this).css('height','50px');
-                    $(this).find('textarea').css('width', '100%');
-                    $(this).find('textarea').css('height', '25px');
-                    if(left == 75) {left = 0; top+=75;}
-                    else {left += 25;}
-                } else {
-                    $(this).css('left', left+'%');
-                    $(this).css('top', top+'px');
-                    $(this).css('width', '25%');
-                    $(this).css('height', '150px');
-                    if(left == 75){ left = 0; top+=150;}
-                    else {left += 25;}
-                } 
-            });        
-        
-        }
-        setNeededHeightOfForm();    
-    }        
-    
-    loadTemplateJson(false);
     </script>
     {% endif %}     
    {% endblock %}
